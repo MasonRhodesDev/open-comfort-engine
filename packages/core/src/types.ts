@@ -34,6 +34,8 @@ export interface Params {
   priorSigma: number;
   adaptiveSlope: number;
   adaptiveRef: number;
+  adaptiveTrmMin: number;
+  adaptiveTrmMax: number;
   voteNoise: number;
   silenceSigma: number;
   silenceWeight: number;
@@ -91,6 +93,8 @@ export const DEFAULT_PARAMS: Params = {
   priorSigma: 1.5,
   adaptiveSlope: 0.1,
   adaptiveRef: 20,
+  adaptiveTrmMin: 10,
+  adaptiveTrmMax: 33.5,
   voteNoise: 0.7,
   silenceSigma: 2.0,
   silenceWeight: 0.3,
@@ -240,7 +244,7 @@ export interface Snapshot {
   reading: { tin: number; rh: number | null; equip: Equip | null; applied: Applied | null; at: number } | null;
   weather: { out: number; high: number | null; low: number | null; at: number } | null;
   trm: number | null;
-  day: { date: string | null; sum: number; n: number };
+  day: { date: string | null; sum: number; n: number; hl: number | null };
   nudge: { delta: number; blockId: string | null };
   drift: { value: number; pausedUntil: number | null };
   vacancy: { since: number | null; value: number; recovering: boolean };

@@ -1,6 +1,6 @@
 {
   "name": "node-red-contrib-open-comfort-engine",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Node-RED nodes for the Open Comfort Engine: learn comfort from too-hot/too-cold votes and drive any thermostat's heat/cool setpoints, with power-saving drift toward idle.",
   "license": "MIT",
   "keywords": ["node-red", "thermostat", "comfort", "hvac", "home-assistant", "climate"],

@@ -1,6 +1,6 @@
 # Open Comfort Engine — Specification
 
-Version: **0.1.0** (draft)
+Version: **0.1.1** (draft)
 Status: normative. The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are
 to be interpreted as described in RFC 2119.
 
@@ -97,6 +97,7 @@ Defaults are normative. Hosts MAY override within the allowed range.
 | `priorSigma` | 1.5 | 0.5–4 | §6.1 |
 | `adaptiveSlope` (k) | 0.10 | 0–0.4 | §6.1 |
 | `adaptiveRef` | 20 | — | §6.1 |
+| `adaptiveTrmMin` / `adaptiveTrmMax` | 10 / 33.5 | — | §7.2a |
 | `voteNoise` (s) | 0.7 | 0.2–2 | §6.2 |
 | `silenceSigma` | 2.0 | 0.5–5 | §6.2 |
 | `silenceWeight` | 0.3 | 0–1 | §6.2 |
@@ -163,7 +164,7 @@ rejected with a `{type:"rejected", reason:"type"}` record.
 - `models[uid][blockId]` — comfort range model per user and block (§6).
 - `presence` — `{known, users, since, expectedArrival, expectedUsers}`; `since` is when the set of present users last changed.
 - `reading` — last `{tin, rh, equip, applied, at}`.
-- `weather` — last `{out, high, low, at}`, plus running-mean `trm` (§6.5).
+- `weather` — last `{out, high, low, at}`, plus running-mean `trm` and the day being tracked `{date, sum, n, hl}` (§6.5).
 - `nudge` — `{delta, blockId}` (§7.3).
 - `drift` — occupied drift `{value, pausedUntil}` (§7.4).
 - `vacancy` — `{since, value}` (§7.6).
@@ -294,11 +295,16 @@ After every vote or manual update, on the updated edge:
 
 ### 6.5 Running-mean outdoor temperature (trm)
 
-The engine averages `weather.out` samples per local date. When the local date of
-a `weather` event differs from the date being averaged, the finished day's mean
-`d` updates `trm ← (1 − trmAlpha)·d + trmAlpha·trm` (if `trm` is unset:
-`trm ← d`). Until the first day completes, `trm` is the running mean of today's
-samples. If no weather has ever been received, `trm = adaptiveRef`.
+A day's mean outdoor temperature `d` is `(high + low)/2` from the latest
+`weather` event of that local date that carried both `high` and `low`; if none
+did, it is the mean of that date's `out` samples. (Sampling only part of a day —
+e.g. an engine started mid-afternoon — badly overestimates the mean; the
+forecast extremes don't.)
+
+When the local date of a `weather` event differs from the date being tracked,
+the finished day's `d` updates `trm ← (1 − trmAlpha)·d + trmAlpha·trm` (if
+`trm` is unset: `trm ← d`). Until the first day completes, `trm` is today's `d`
+so far. If no weather has ever been received, `trm = adaptiveRef`.
 
 ## 7. Control
 
@@ -333,7 +339,8 @@ gap rule in §7.10 resolves it in favour of the season.
 
 ### 7.2a Adaptive term
 
-`A = adaptiveSlope · (trm − adaptiveRef)`. The seed schedule is taken to be
+`A = adaptiveSlope · (clamp(trm, adaptiveTrmMin, adaptiveTrmMax) − adaptiveRef)`
+(the clamp is the adaptive model's range of validity). The seed schedule is taken to be
 comfortable at `trm = adaptiveRef`; on warmer (cooler) running-mean outdoor
 temperatures the whole band moves up (down) by `A`, as in the ASHRAE 55 adaptive
 comfort model. The default slope (0.10) is the value reported for mechanically
@@ -605,7 +612,9 @@ The snapshot is the complete state as JSON
 `snapshotVersion: 1`. `restore{snapshot}` MUST accept any version ≤ the
 implementation's and migrate it; unknown higher versions MUST be rejected.
 The engine emits `effects.snapshot` after any event that changed models,
-blocks, or `frozen`, and otherwise at most once every `snapshotEveryMin`.
+blocks or `frozen`, or that produced a `decision` record (so a restored
+snapshot's `lastOutput` is the output actually published), and otherwise at
+most once every `snapshotEveryMin`.
 Round-trip requirement: `restore(snapshot)` followed by the same events MUST
 produce identical outputs to never having snapshotted.
 

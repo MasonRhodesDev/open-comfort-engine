@@ -156,3 +156,22 @@ describe("engine rules", () => {
     expect((splits[0] as any).blocks.map((b: any) => b.start)).toContain(11 * 60);
   });
 });
+
+describe("0.1.1: outdoor running mean", () => {
+  it("a mid-afternoon heat-wave start uses the forecast high/low, not the afternoon samples", () => {
+    const { outs } = drive([
+      { type: "weather", now: at(1, "12:30"), out: 37, high: 37, low: 17 },
+      { type: "presence", now: at(1, "12:31"), users: ["u1"] },
+    ]);
+    expect(outs[1].adaptive).toBeCloseTo(0.1 * ((37 + 17) / 2 - 20), 9); // 0.7, not 1.7
+  });
+  it("trm is clamped to the adaptive model's range", () => {
+    const { outs } = drive([{ type: "weather", now: at(1, "12:30"), out: 45, high: 48, low: 40 }]);
+    expect(outs[0].adaptive).toBeCloseTo(0.1 * (33.5 - 20), 9);
+  });
+  it("a 0.1.0 snapshot (no day.hl) restores", () => {
+    const s = drive(base()).s as any;
+    delete s.day.hl;
+    expect(() => step(restore(s), { type: "tick", now: at(1, "10:00") }, house)).not.toThrow();
+  });
+});

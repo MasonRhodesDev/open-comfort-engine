@@ -6,7 +6,8 @@
       name: { value: "" },
       zone: { value: "", type: "comfort-zone", required: true },
       tickSec: { value: 60, validate: RED.validators.number() },
-      persist: { value: false }
+      persist: { value: false },
+      sendAlways: { value: false }
     },
     inputs: 1,
     outputs: 4,
@@ -21,6 +22,7 @@
   <div class="form-row"><label for="node-input-zone">Zone</label><input type="text" id="node-input-zone"></div>
   <div class="form-row"><label for="node-input-tickSec">Tick (s)</label><input type="number" id="node-input-tickSec" style="width:80px"> <span>0 = send your own <code>tick</code> events</span></div>
   <div class="form-row"><label for="node-input-persist">&nbsp;</label><label for="node-input-persist" style="width:70%"><input type="checkbox" id="node-input-persist" style="width:auto"> Keep state in this node's context store</label></div>
+  <div class="form-row"><label for="node-input-sendAlways">&nbsp;</label><label for="node-input-sendAlways" style="width:70%"><input type="checkbox" id="node-input-sendAlways" style="width:auto"> Send setpoints on every step (not only when they change)</label></div>
 </script>
 
 <script type="text/html" data-help-name="comfort-engine">
@@ -40,7 +42,7 @@
   </dl>
   <h3>Outputs</h3>
   <ol class="node-ports">
-    <li>Setpoints: <code>msg.payload = {heat, cool, mode, state, units}</code>, <code>msg.engine</code> = full output.</li>
+    <li>Setpoints: <code>msg.payload = {heat, cool, mode, state, units}</code>, <code>msg.engine</code> = full output. Sent when they change, on the first step after a (re)start and after a restore; or on every step if configured.</li>
     <li>Records (votes, decisions, conflicts, block changes) to log anywhere.</li>
     <li>Snapshot of the full state: store it and send it back as a <code>restore</code> event on start.</li>
     <li>Feedback for the voter: <code>msg.topic</code> = code, <code>msg.payload</code> = English text (never numbers).</li>

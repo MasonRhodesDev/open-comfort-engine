@@ -9,6 +9,8 @@ module.exports = function (RED) {
     const zoneNode = RED.nodes.getNode(n.zone);
     node.tickSec = Number(n.tickSec) || 0;
     node.persist = !!n.persist;
+    node.sendAlways = !!n.sendAlways;
+    let published = false;
     if (!zoneNode || !zoneNode.zone) {
       node.status({ fill: "red", shape: "ring", text: "no zone" });
       return;
@@ -46,9 +48,13 @@ module.exports = function (RED) {
       const fb = r.effects.feedback ? { topic: r.effects.feedback, payload: FEEDBACK_EN[r.effects.feedback] || r.effects.feedback, event } : null;
       node.status({ fill: o.state === "FROZEN" ? "grey" : o.state === "HOLD" ? "yellow" : "green", shape: "dot",
         text: `${o.state} ${toUnits(o.heat)}–${toUnits(o.cool)}° ${o.reasons.filter((x) => x !== "seed").join(",")}` });
-      // setpoints only when the decision changed (the engine emits a `decision` record then)
+      // setpoints when the decision changed (the engine emits a `decision` record then), on the
+      // first step after start and after a restore (consumers may hold a stale value), or on every
+      // step when configured (so consumers can treat the age of the last message as liveness)
       const changed = r.effects.records.some((x) => x.type === "decision");
-      send([changed ? outMsg : null, recs.length ? recs : null, snap, fb]);
+      const publish = changed || !published || event.type === "restore" || node.sendAlways;
+      published = true;
+      send([publish ? outMsg : null, recs.length ? recs : null, snap, fb]);
       if (done) done();
     }
 

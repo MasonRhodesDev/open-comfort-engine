@@ -226,7 +226,15 @@
         "date",
         "sum",
         "n"
-      ]
+      ],
+      "properties": {
+        "hl": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      }
     },
     "nudge": {
       "type": "object",

@@ -64,7 +64,7 @@ export function init(config: ZoneConfig): State {
     reading: null,
     weather: null,
     trm: null,
-    day: { date: null, sum: 0, n: 0 },
+    day: { date: null, sum: 0, n: 0, hl: null },
     nudge: { delta: 0, blockId: null },
     drift: { value: 0, pausedUntil: null },
     vacancy: { since: null, value: 0, recovering: false },
@@ -86,7 +86,9 @@ export function init(config: ZoneConfig): State {
 export function restore(snapshot: Snapshot): State {
   if (!snapshot || typeof snapshot !== "object") throw new Error("bad snapshot");
   if (snapshot.snapshotVersion !== 1) throw new Error("unsupported snapshotVersion " + snapshot.snapshotVersion);
-  return JSON.parse(JSON.stringify(snapshot));
+  const s = JSON.parse(JSON.stringify(snapshot));
+  if (s.day && s.day.hl === undefined) s.day.hl = null; // 0.1.0 snapshots
+  return s;
 }
 
 export function serialize(state: State): Snapshot {
@@ -176,11 +178,23 @@ function modelConfidence(ctx: Ctx, m: UserBlockModel): number {
   return clamp(1 - modelSigma(ctx, m) / ctx.p.priorSigma, 0, 1);
 }
 
+/** §6.5: a day's mean outdoor temperature — (high+low)/2 from the forecast when known, else the samples' mean. */
+function dayMean(s: State): number {
+  if (s.day.hl !== null && s.day.hl !== undefined) return s.day.hl;
+  return s.day.sum / s.day.n;
+}
+
 function trm(ctx: Ctx): number {
   const s = ctx.s;
   if (s.trm !== null) return s.trm;
-  if (s.day.n > 0) return s.day.sum / s.day.n;
+  if (s.day.n > 0 || (s.day.hl !== null && s.day.hl !== undefined)) return dayMean(s);
   return ctx.p.adaptiveRef;
+}
+
+/** §7.2a: the adaptive term, with trm clamped to the adaptive model's valid range. */
+function adaptive(ctx: Ctx): number {
+  const p = ctx.p;
+  return p.adaptiveSlope * (clamp(trm(ctx), p.adaptiveTrmMin, p.adaptiveTrmMax) - p.adaptiveRef);
 }
 
 function coolingSeason(ctx: Ctx): boolean {
@@ -190,7 +204,7 @@ function coolingSeason(ctx: Ctx): boolean {
 /** §6.2 likelihood update on one edge. */
 function observe(ctx: Ctx, m: UserBlockModel, b: Block, kind: "hot" | "cold" | "silence", tin: number, weight = 1) {
   const { p, g } = ctx;
-  const A = p.adaptiveSlope * (trm(ctx) - p.adaptiveRef);
+  const A = adaptive(ctx);
   const T = (i: number) => g[i] + A;
   const pr = priors(ctx, b);
   if (kind === "hot") {
@@ -461,7 +475,7 @@ function computeOutput(ctx: Ctx, b: Block): Output {
   const t = ctx.w.t;
   const st = stateName(ctx, b, t);
   const sh = shifts(ctx, b);
-  const A = p.adaptiveSlope * (trm(ctx) - p.adaptiveRef);
+  const A = adaptive(ctx);
   const reasons: string[] = [];
   const present = s.presence.known ? s.presence.users : [];
   let heat = b.heat + sh.heat + A + s.nudge.delta;
@@ -631,7 +645,7 @@ function onVote(ctx: Ctx, b: Block, ev: Extract<EngineEvent, { type: "vote" }>) 
       // §7.3: the voted edge must end at least one step past the room temperature, so the vote is felt;
       // whatever the learned shift already moved counts toward it
       const after = shiftsPeek(ctx, b);
-      const A = p.adaptiveSlope * (trm(ctx) - p.adaptiveRef);
+      const A = adaptive(ctx);
       let delta: number;
       if (dir === "hot") delta = Math.min(0, r.tin - m.step - (b.cool + after.cool + A + s.nudge.delta));
       else delta = Math.max(0, r.tin + m.step - (b.heat + after.heat + A + s.nudge.delta));
@@ -708,14 +722,15 @@ function onWeather(ctx: Ctx, ev: Extract<EngineEvent, { type: "weather" }>) {
   const s = ctx.s;
   const p = ctx.p;
   const date = ctx.w.date;
-  if (s.day.date !== null && s.day.date !== date && s.day.n > 0) {
-    const d = s.day.sum / s.day.n;
+  if (s.day.date !== null && s.day.date !== date && (s.day.n > 0 || s.day.hl !== null)) {
+    const d = dayMean(s);
     s.trm = s.trm === null ? d : (1 - p.trmAlpha) * d + p.trmAlpha * s.trm;
-    s.day = { date, sum: 0, n: 0 };
+    s.day = { date, sum: 0, n: 0, hl: null };
   }
   if (s.day.date === null) s.day.date = date;
   s.day.sum += ev.out;
   s.day.n += 1;
+  if (typeof ev.high === "number" && typeof ev.low === "number") s.day.hl = (ev.high + ev.low) / 2;
   s.weather = { out: ev.out, high: ev.high ?? null, low: ev.low ?? null, at: ctx.w.t };
 }
 
@@ -898,7 +913,8 @@ export function step(state: State, event: EngineEvent, config: ZoneConfig): Step
   finishOutput(ctx, out);
   const effects: Effects = { records: ctx.records };
   if (ctx.feedback) effects.feedback = ctx.feedback;
-  if (ctx.dirty || s.lastSnapshotAt === null || w.t - s.lastSnapshotAt >= p.snapshotEveryMin * MIN) {
+  const decided = ctx.records.some((r) => r.type === "decision");
+  if (ctx.dirty || decided || s.lastSnapshotAt === null || w.t - s.lastSnapshotAt >= p.snapshotEveryMin * MIN) {
     s.lastSnapshotAt = w.t;
     effects.snapshot = serialize(s);
   }
