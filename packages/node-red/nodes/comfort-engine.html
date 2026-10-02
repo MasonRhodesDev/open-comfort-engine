@@ -1,0 +1,49 @@
+<script type="text/javascript">
+  RED.nodes.registerType("comfort-engine", {
+    category: "function",
+    color: "#a6bbcf",
+    defaults: {
+      name: { value: "" },
+      zone: { value: "", type: "comfort-zone", required: true },
+      tickSec: { value: 60, validate: RED.validators.number() },
+      persist: { value: false }
+    },
+    inputs: 1,
+    outputs: 4,
+    outputLabels: ["setpoints", "records", "snapshot", "feedback"],
+    icon: "font-awesome/fa-thermometer-half",
+    label: function () { return this.name || "comfort engine"; }
+  });
+</script>
+
+<script type="text/html" data-template-name="comfort-engine">
+  <div class="form-row"><label for="node-input-name"><i class="fa fa-tag"></i> Name</label><input type="text" id="node-input-name"></div>
+  <div class="form-row"><label for="node-input-zone">Zone</label><input type="text" id="node-input-zone"></div>
+  <div class="form-row"><label for="node-input-tickSec">Tick (s)</label><input type="number" id="node-input-tickSec" style="width:80px"> <span>0 = send your own <code>tick</code> events</span></div>
+  <div class="form-row"><label for="node-input-persist">&nbsp;</label><label for="node-input-persist" style="width:70%"><input type="checkbox" id="node-input-persist" style="width:auto"> Keep state in this node's context store</label></div>
+</script>
+
+<script type="text/html" data-help-name="comfort-engine">
+  <p>Learns how warm or cool each person likes a zone from "too hot / too cold" votes, and outputs heat/cool setpoints. Drifts toward idle to save energy while nobody complains, faster when the zone is empty.</p>
+  <h3>Input</h3>
+  <p><code>msg.payload</code> is an event (<code>{type, ...}</code>), or <code>msg.topic</code> is the type and <code>msg.payload</code> its fields. <code>now</code> defaults to the current time.</p>
+  <dl class="message-properties">
+    <dt>vote</dt><dd><code>{user, dir: "hot"|"cold", src?}</code> — <code>user</code> is any id string; the engine never interprets it.</dd>
+    <dt>presence</dt><dd><code>{users: [...], expectedArrival?, expectedUsers?}</code> — who is here now; optionally who you expect next, and when.</dd>
+    <dt>reading</dt><dd><code>{tin, rh?, equip?, applied?: {heat, cool, mode}}</code> — room temperature and what the device is actually set to.</dd>
+    <dt>weather</dt><dd><code>{out, high?, low?}</code></dd>
+    <dt>cost</dt><dd><code>{level: 0..1}</code> relative energy price.</dd>
+    <dt>manual</dt><dd><code>{applied}</code> someone set the device by hand: hold until the next block.</dd>
+    <dt>freeze</dt><dd><code>{on}</code> "we've got this": stop learning and drift.</dd>
+    <dt>tick</dt><dd>heartbeat (or set Tick).</dd>
+    <dt>restore</dt><dd><code>{snapshot}</code> from output 3.</dd>
+  </dl>
+  <h3>Outputs</h3>
+  <ol class="node-ports">
+    <li>Setpoints: <code>msg.payload = {heat, cool, mode, state, units}</code>, <code>msg.engine</code> = full output.</li>
+    <li>Records (votes, decisions, conflicts, block changes) to log anywhere.</li>
+    <li>Snapshot of the full state: store it and send it back as a <code>restore</code> event on start.</li>
+    <li>Feedback for the voter: <code>msg.topic</code> = code, <code>msg.payload</code> = English text (never numbers).</li>
+  </ol>
+  <p>Spec and other-language implementations: <a href="https://github.com/MasonRhodesDev/open-comfort-engine">open-comfort-engine</a>.</p>
+</script>

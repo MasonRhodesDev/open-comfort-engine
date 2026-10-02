@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/MasonRhodesDev/open-comfort-engine/spec/schema/output.schema.json",
+  "title": "Engine output (spec \u00a77.10)",
+  "type": "object",
+  "required": [
+    "heat",
+    "cool",
+    "mode",
+    "state",
+    "block",
+    "reasons",
+    "confidence",
+    "coolShift",
+    "heatShift",
+    "adaptive",
+    "nudge",
+    "drift",
+    "vacancy"
+  ],
+  "properties": {
+    "heat": {
+      "type": "number"
+    },
+    "cool": {
+      "type": "number"
+    },
+    "mode": {
+      "enum": [
+        "heat",
+        "cool",
+        "auto",
+        "off"
+      ]
+    },
+    "state": {
+      "enum": [
+        "SEEDED",
+        "LEARNING",
+        "CONVERGED",
+        "FROZEN",
+        "HOLD",
+        "VACANT",
+        "RECOVERING"
+      ]
+    },
+    "block": {
+      "type": "string"
+    },
+    "reasons": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "seed",
+          "adaptive",
+          "learned",
+          "conflict",
+          "nudge",
+          "drift",
+          "vacancy",
+          "precondition",
+          "recovering",
+          "hold",
+          "frozen",
+          "limit",
+          "gap"
+        ]
+      }
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "coolShift": {
+      "type": "number"
+    },
+    "heatShift": {
+      "type": "number"
+    },
+    "adaptive": {
+      "type": "number"
+    },
+    "nudge": {
+      "type": "number"
+    },
+    "drift": {
+      "type": "number",
+      "minimum": 0
+    },
+    "vacancy": {
+      "type": "number",
+      "minimum": 0
+    }
+  },
+  "additionalProperties": false
+}

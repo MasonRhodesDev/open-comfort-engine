@@ -1,0 +1,12 @@
+[
+  {"id":"oce-zone","type":"comfort-zone","name":"House","zoneId":"house","units":"F","config":"{\"capabilities\":{\"modes\":[\"heat\",\"cool\",\"auto\",\"off\"],\"minGap\":3,\"setpointStep\":1,\"heat\":{\"min\":50,\"max\":86},\"cool\":{\"min\":60,\"max\":90}},\"seed\":{\"blocks\":[{\"start\":\"09:00\",\"heat\":68,\"cool\":76},{\"start\":\"16:00\",\"heat\":66,\"cool\":72},{\"start\":\"22:00\",\"heat\":62,\"cool\":68}]},\"setback\":{\"heat\":59,\"cool\":84},\"responseMin\":45}"},
+  {"id":"oce-tab","type":"tab","label":"Comfort Engine example"},
+  {"id":"oce-engine","type":"comfort-engine","z":"oce-tab","name":"house comfort","zone":"oce-zone","tickSec":60,"persist":true,"x":420,"y":200,"wires":[["oce-out"],["oce-rec"],[],["oce-fb"]]},
+  {"id":"oce-pres","type":"inject","z":"oce-tab","name":"alice + bob home","props":[{"p":"topic","vt":"str"},{"p":"payload"}],"topic":"presence","payload":"{\"users\":[\"alice\",\"bob\"]}","payloadType":"json","x":170,"y":120,"wires":[["oce-engine"]]},
+  {"id":"oce-read","type":"inject","z":"oce-tab","name":"room 75 °F","props":[{"p":"topic","vt":"str"},{"p":"payload"}],"topic":"reading","payload":"{\"tin\":75}","payloadType":"json","x":150,"y":160,"wires":[["oce-engine"]]},
+  {"id":"oce-hot","type":"inject","z":"oce-tab","name":"alice: too hot","props":[{"p":"topic","vt":"str"},{"p":"payload"}],"topic":"vote","payload":"{\"user\":\"alice\",\"dir\":\"hot\",\"src\":\"example\"}","payloadType":"json","x":160,"y":200,"wires":[["oce-engine"]]},
+  {"id":"oce-cold","type":"inject","z":"oce-tab","name":"bob: too cold","props":[{"p":"topic","vt":"str"},{"p":"payload"}],"topic":"vote","payload":"{\"user\":\"bob\",\"dir\":\"cold\",\"src\":\"example\"}","payloadType":"json","x":160,"y":240,"wires":[["oce-engine"]]},
+  {"id":"oce-out","type":"debug","z":"oce-tab","name":"setpoints -> your thermostat","active":true,"tosidebar":true,"complete":"payload","x":700,"y":160,"wires":[]},
+  {"id":"oce-rec","type":"debug","z":"oce-tab","name":"records","active":false,"tosidebar":true,"complete":"payload","x":660,"y":200,"wires":[]},
+  {"id":"oce-fb","type":"debug","z":"oce-tab","name":"say to the voter","active":true,"tosidebar":true,"complete":"payload","x":680,"y":240,"wires":[]}
+]

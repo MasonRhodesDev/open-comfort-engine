@@ -1,0 +1,327 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/MasonRhodesDev/open-comfort-engine/spec/schema/snapshot.schema.json",
+  "title": "Snapshot: complete engine state (spec \u00a79). Instants are epoch milliseconds.",
+  "type": "object",
+  "required": [
+    "snapshotVersion",
+    "zone",
+    "seedKey",
+    "blocks",
+    "nextBlockNo",
+    "models",
+    "presence",
+    "lastSilenceAt",
+    "reading",
+    "weather",
+    "trm",
+    "day",
+    "nudge",
+    "drift",
+    "vacancy",
+    "hold",
+    "frozen",
+    "responseRate",
+    "structure",
+    "cost",
+    "lastShift",
+    "conflictDay",
+    "lastOutput",
+    "lastBlockId",
+    "lastEventAt",
+    "lastSnapshotAt"
+  ],
+  "properties": {
+    "snapshotVersion": {
+      "const": 1
+    },
+    "zone": {
+      "type": "string"
+    },
+    "seedKey": {
+      "type": "string"
+    },
+    "blocks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "start",
+          "heat",
+          "cool"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "start": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1439
+          },
+          "heat": {
+            "type": "number"
+          },
+          "cool": {
+            "type": "number"
+          }
+        }
+      }
+    },
+    "nextBlockNo": {
+      "type": "integer"
+    },
+    "models": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "required": [
+            "lower",
+            "upper",
+            "n",
+            "step",
+            "lastVote"
+          ],
+          "properties": {
+            "lower": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "upper": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "n": {
+              "type": "number"
+            },
+            "step": {
+              "type": "number"
+            },
+            "lastVote": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "at",
+                    "dir",
+                    "tin"
+                  ],
+                  "properties": {
+                    "at": {
+                      "type": "number"
+                    },
+                    "dir": {
+                      "enum": [
+                        "hot",
+                        "cold"
+                      ]
+                    },
+                    "tin": {
+                      "type": "number"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "presence": {
+      "type": "object",
+      "required": [
+        "known",
+        "users",
+        "expectedArrival",
+        "expectedUsers",
+        "since"
+      ],
+      "properties": {
+        "known": {
+          "type": "boolean"
+        },
+        "users": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "expectedArrival": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "expectedUsers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "since": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      }
+    },
+    "lastSilenceAt": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "number"
+      }
+    },
+    "reading": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "required": [
+            "tin",
+            "at"
+          ]
+        }
+      ]
+    },
+    "weather": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "required": [
+            "out",
+            "at"
+          ]
+        }
+      ]
+    },
+    "trm": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "day": {
+      "type": "object",
+      "required": [
+        "date",
+        "sum",
+        "n"
+      ]
+    },
+    "nudge": {
+      "type": "object",
+      "required": [
+        "delta",
+        "blockId"
+      ]
+    },
+    "drift": {
+      "type": "object",
+      "required": [
+        "value",
+        "pausedUntil"
+      ]
+    },
+    "vacancy": {
+      "type": "object",
+      "required": [
+        "since",
+        "value",
+        "recovering"
+      ]
+    },
+    "hold": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "required": [
+            "until",
+            "applied"
+          ]
+        }
+      ]
+    },
+    "frozen": {
+      "type": "boolean"
+    },
+    "responseRate": {
+      "type": "number"
+    },
+    "structure": {
+      "type": "object",
+      "required": [
+        "rng",
+        "lastRunDate",
+        "trials",
+        "votes"
+      ],
+      "properties": {
+        "rng": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        }
+      }
+    },
+    "cost": {
+      "type": "number"
+    },
+    "lastShift": {
+      "type": "object"
+    },
+    "conflictDay": {
+      "type": "object"
+    },
+    "lastOutput": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "output.schema.json"
+        }
+      ]
+    },
+    "lastBlockId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "lastEventAt": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "lastSnapshotAt": {
+      "type": [
+        "number",
+        "null"
+      ]
+    }
+  }
+}

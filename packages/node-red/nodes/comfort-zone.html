@@ -1,0 +1,48 @@
+<script type="text/javascript">
+  RED.nodes.registerType("comfort-zone", {
+    category: "config",
+    defaults: {
+      name: { value: "" },
+      zoneId: { value: "house", required: true },
+      units: { value: "F" },
+      config: {
+        value: JSON.stringify({
+          capabilities: { modes: ["heat", "cool", "auto", "off"], minGap: 3, setpointStep: 1, heat: { min: 50, max: 86 }, cool: { min: 60, max: 90 } },
+          seed: { blocks: [ { start: "09:00", heat: 68, cool: 76 }, { start: "16:00", heat: 66, cool: 72 }, { start: "22:00", heat: 62, cool: 68 } ] },
+          setback: { heat: 59, cool: 84 },
+          responseMin: 45
+        }, null, 2),
+        validate: function (v) { try { JSON.parse(v); return true; } catch (e) { return false; } }
+      }
+    },
+    label: function () { return this.name || this.zoneId || "comfort zone"; },
+    oneditprepare: function () {
+      this.editor = RED.editor.createEditor({ id: "node-config-input-config-editor", mode: "ace/mode/json", value: this.config });
+    },
+    oneditsave: function () { $("#node-config-input-config").val(this.editor.getValue()); this.editor.destroy(); delete this.editor; },
+    oneditcancel: function () { this.editor.destroy(); delete this.editor; }
+  });
+</script>
+
+<script type="text/html" data-template-name="comfort-zone">
+  <div class="form-row"><label for="node-config-input-name"><i class="fa fa-tag"></i> Name</label><input type="text" id="node-config-input-name"></div>
+  <div class="form-row"><label for="node-config-input-zoneId">Zone id</label><input type="text" id="node-config-input-zoneId"></div>
+  <div class="form-row"><label for="node-config-input-units">Units</label>
+    <select id="node-config-input-units"><option value="F">°F</option><option value="C">°C</option></select></div>
+  <div class="form-row node-text-editor-row"><label>Zone config (capabilities, seed, setback, responseMin, params)</label>
+    <div style="height: 320px; min-height:150px;" class="node-text-editor" id="node-config-input-config-editor"></div>
+    <input type="hidden" id="node-config-input-config"></div>
+</script>
+
+<script type="text/html" data-help-name="comfort-zone">
+  <p>One climate zone for the Open Comfort Engine: what the device can do, the seed schedule, and limits.</p>
+  <h3>Config</h3>
+  <dl class="message-properties">
+    <dt>capabilities</dt><dd>modes, <code>minGap</code> (smallest cool−heat the device accepts in auto), <code>setpointStep</code>, heat/cool min/max.</dd>
+    <dt>seed.blocks</dt><dd>The starting schedule: <code>{start:"HH:MM", heat, cool}</code>. The engine starts here and learns from votes.</dd>
+    <dt>setback</dt><dd>How far vacancy drift may go: lowest heat and highest cool setpoint.</dd>
+    <dt>responseMin</dt><dd>Typical minutes for the room to respond to a change.</dd>
+    <dt>params</dt><dd>Optional overrides of the spec's parameters (always in °C).</dd>
+  </dl>
+  <p>With units °F, temperatures here are converted to °C for the engine; parameters stay in °C.</p>
+</script>

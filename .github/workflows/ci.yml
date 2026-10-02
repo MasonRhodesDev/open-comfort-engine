@@ -1,0 +1,43 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: typecheck (core has no Node/DOM types: no host APIs)
+        run: npm run typecheck
+      - name: core purity (no clock, randomness, I/O or host modules)
+        run: |
+          if grep -nE 'Date\.now|new Date\(|Math\.random|require\(|from "node:|from "fs"|console\.|setTimeout|setInterval|process\.' packages/core/src/*.ts; then
+            echo "::error::packages/core must stay pure (spec §1)"; exit 1; fi
+      - name: unit, conformance vectors, schemas, simulation outcomes
+        run: npm test
+      - name: vectors are up to date with the reference implementation
+        run: npm run vectors && git diff --exit-code spec/vectors
+      - run: npm run build
+      - name: pack
+        run: npm pack -w open-comfort-engine -w node-red-contrib-open-comfort-engine
+  gitleaks:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fetch gitleaks
+        run: |
+          curl -sL -o /tmp/gitleaks.tgz https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz
+          echo "5bc41815076e6ed6ef8fbecc9d9b75bcae31f39029ceb55da08086315316e3ba  /tmp/gitleaks.tgz" | sha256sum -c -
+          tar -C /tmp -xzf /tmp/gitleaks.tgz gitleaks
+      - run: /tmp/gitleaks git . --no-banner --redact --log-opts="origin/${{ github.base_ref }}..HEAD"

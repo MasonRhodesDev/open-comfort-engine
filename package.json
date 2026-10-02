@@ -1,0 +1,23 @@
+{
+  "name": "open-comfort-engine-monorepo",
+  "private": true,
+  "description": "Learned, vote-driven comfort control for any climate zone: spec, reference implementation, adapters.",
+  "license": "MIT",
+  "workspaces": ["packages/core", "packages/node-red"],
+  "scripts": {
+    "build": "npm run build -w open-comfort-engine && npm run build -w node-red-contrib-open-comfort-engine",
+    "typecheck": "tsc -p packages/core --noEmit",
+    "test": "vitest run",
+    "sim": "tsx packages/core/test/sim/cli.ts",
+    "vectors": "tsx packages/core/test/sim/make-vectors.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "tsup": "^8.3.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

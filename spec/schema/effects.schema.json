@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/MasonRhodesDev/open-comfort-engine/spec/schema/effects.schema.json",
+  "title": "Engine effects (spec \u00a710)",
+  "type": "object",
+  "required": [
+    "records"
+  ],
+  "properties": {
+    "records": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "type",
+          "at",
+          "zone"
+        ],
+        "properties": {
+          "type": {
+            "enum": [
+              "vote",
+              "decision",
+              "conflict",
+              "blocks",
+              "rejected"
+            ]
+          },
+          "at": {
+            "type": "string"
+          },
+          "zone": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "snapshot": {
+      "$ref": "snapshot.schema.json"
+    },
+    "feedback": {
+      "enum": [
+        "nudge.cooler",
+        "nudge.warmer",
+        "noted.cooldown",
+        "noted.hold",
+        "noted.no_reading"
+      ]
+    }
+  }
+}

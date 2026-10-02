@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/MasonRhodesDev/open-comfort-engine/spec/schema/zone-config.schema.json",
+  "title": "ZoneConfig (spec \u00a73)",
+  "type": "object",
+  "required": [
+    "id",
+    "capabilities",
+    "seed",
+    "setback",
+    "responseMin"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "capabilities": {
+      "type": "object",
+      "required": [
+        "modes",
+        "minGap",
+        "setpointStep",
+        "heat",
+        "cool"
+      ],
+      "properties": {
+        "modes": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "heat",
+              "cool",
+              "auto",
+              "off"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "minGap": {
+          "type": "number",
+          "minimum": 0
+        },
+        "setpointStep": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "heat": {
+          "type": "object",
+          "required": [
+            "min",
+            "max"
+          ],
+          "properties": {
+            "min": {
+              "type": "number"
+            },
+            "max": {
+              "type": "number"
+            }
+          }
+        },
+        "cool": {
+          "type": "object",
+          "required": [
+            "min",
+            "max"
+          ],
+          "properties": {
+            "min": {
+              "type": "number"
+            },
+            "max": {
+              "type": "number"
+            }
+          }
+        }
+      }
+    },
+    "seed": {
+      "type": "object",
+      "required": [
+        "blocks"
+      ],
+      "properties": {
+        "blocks": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 12,
+          "items": {
+            "type": "object",
+            "required": [
+              "start",
+              "heat",
+              "cool"
+            ],
+            "properties": {
+              "start": {
+                "type": "string",
+                "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$"
+              },
+              "heat": {
+                "type": "number"
+              },
+              "cool": {
+                "type": "number"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      }
+    },
+    "setback": {
+      "type": "object",
+      "required": [
+        "heat",
+        "cool"
+      ],
+      "properties": {
+        "heat": {
+          "type": "number"
+        },
+        "cool": {
+          "type": "number"
+        }
+      }
+    },
+    "responseMin": {
+      "type": "number",
+      "minimum": 0
+    },
+    "params": {
+      "type": "object",
+      "description": "Optional overrides of spec \u00a73.4 parameters, plus `seed` (uint32) for the structure PRNG.",
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          }
+        ]
+      }
+    }
+  }
+}
