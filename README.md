@@ -56,7 +56,7 @@ Until it's on npm, install a release tarball (Menu → Manage palette → Instal
 upload, or in your Node-RED user directory):
 
 ```sh
-npm install https://github.com/MasonRhodesDev/open-comfort-engine/releases/download/v0.1.0/node-red-contrib-open-comfort-engine-0.1.0.tgz
+npm install https://github.com/MasonRhodesDev/open-comfort-engine/releases/download/v0.1.1/node-red-contrib-open-comfort-engine-0.1.1.tgz
 ```
 
 Import `examples/basic.json` from the package. Feed the `comfort-engine` node:
