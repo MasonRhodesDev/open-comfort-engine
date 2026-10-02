@@ -15,13 +15,13 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: typecheck (core has no Node/DOM types: no host APIs)
+      - name: "typecheck (core has no Node or DOM types, so no host APIs)"
         run: npm run typecheck
-      - name: core purity (no clock, randomness, I/O or host modules)
+      - name: "core purity (no clock, randomness, I/O or host modules)"
         run: |
           if grep -nE 'Date\.now|new Date\(|Math\.random|require\(|from "node:|from "fs"|console\.|setTimeout|setInterval|process\.' packages/core/src/*.ts; then
             echo "::error::packages/core must stay pure (spec §1)"; exit 1; fi
-      - name: unit, conformance vectors, schemas, simulation outcomes
+      - name: "unit, conformance vectors, schemas, simulation outcomes"
         run: npm test
       - name: vectors are up to date with the reference implementation
         run: npm run vectors && git diff --exit-code spec/vectors

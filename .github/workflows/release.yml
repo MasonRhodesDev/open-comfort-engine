@@ -22,4 +22,8 @@ jobs:
       - name: GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" *.tgz --title "${GITHUB_REF_NAME}" --notes "Spec $(node -p "require('./packages/core/package.json').version"). Install in Node-RED: npm install https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/node-red-contrib-open-comfort-engine-${GITHUB_REF_NAME#v}.tgz"
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/node-red-contrib-open-comfort-engine-${v}.tgz"
+          printf 'Open Comfort Engine %s.\n\nInstall in Node-RED (user directory or Manage palette upload):\n\n    npm install %s\n' "$v" "$url" > notes.md
+          gh release create "${GITHUB_REF_NAME}" *.tgz --title "${GITHUB_REF_NAME}" --notes-file notes.md
