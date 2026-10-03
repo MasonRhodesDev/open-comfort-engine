@@ -1,6 +1,6 @@
 # Open Comfort Engine — Specification
 
-Version: **0.2.0** (draft)
+Version: **0.3.0** (draft)
 Status: normative. The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are
 to be interpreted as described in RFC 2119.
 
@@ -140,6 +140,24 @@ Defaults are normative. Hosts MAY override within the allowed range.
 | `snapshotEveryMin` | 60 | — | §9 |
 | `protectHysteresis` | 1.0 | 0.2–3 | §7.12 |
 
+### 3.5 Sleep windows
+
+`sleep`: an optional list of up to 4 `{ start: "HH:MM", end: "HH:MM" }` local
+times of day when the zone's present users are asleep (a window MAY wrap
+midnight; `start = end` is ignored). Sleeping users cannot vote, so while the
+current local minute is inside a window **and** at least one user is present:
+
+- occupied drift (§7.4) is **frozen in place**: `drift.value` neither grows nor
+  resets on its own (the usual resets — a vote, a change of the present set, a
+  block change — still apply);
+- no silence observations (§6.3);
+- no trial shift (§8.4) moves a boundary that starts or ends inside a window;
+- the output carries the reason `sleep`.
+
+Votes, nudges, holds, vacancy drift (nobody present = nobody asleep), recovery
+and protection are unaffected. Like the seed, the windows are the host's
+knowledge about its occupants; the engine only applies them.
+
 ## 4. Events
 
 Every event is a JSON object with `type` and `now`. JSON Schemas live in
@@ -153,7 +171,7 @@ rejected with a `{type:"rejected", reason:"type"}` record.
 | `reading` | `tin`, `rh?`, `equip?: "heat"\|"cool"\|"fan"\|"idle"\|"off"`, `applied?: {heat?, cool?, mode?}` | indoor conditions and what the device is actually set to |
 | `weather` | `out`, `high?`, `low?` | outdoor temperature now (and today's forecast extremes) |
 | `cost` | `level` ∈ [0,1] | relative energy price signal (0 = cheapest) |
-| `manual` | `applied: {heat?, cool?, mode?}` | someone changed the device directly; a hold until the next block |
+| `manual` | `applied: {heat?, cool?, mode?}`, `until?` (RFC 3339) | someone changed the device directly; a hold until `until` (host-chosen timeout) or else the next block (§7.9) |
 | `freeze` | `on: boolean` | "we've got this": stop all learning and entropy (§7.8) |
 | `tick` | — | periodic heartbeat; hosts SHOULD send one every 1–5 minutes |
 | `restore` | `snapshot` | replace state with a snapshot (§9) |
@@ -200,7 +218,8 @@ The **state** reported in the output is derived, in this priority order:
    The very first event an engine processes only sets `lastRunDate` to its
    local date (no maintenance), so day one always starts from the seed.
 3. If the current block changed since the previous event: clear `nudge`,
-   expire `hold` (§7.9), reset occupied `drift.value` to 0.
+   expire a `hold` that has no host-given `until` (§7.9), reset occupied
+   `drift.value` to 0.
 4. Apply the event (§6–§7, per type).
 5. Advance time-based processes for the elapsed time since `lastEventAt`:
    silence observations (§6.3), occupied drift (§7.4), vacancy drift (§7.6),
@@ -284,7 +303,8 @@ and no nudge (`effects.feedback = "noted.no_reading"`).
 
 ### 6.3 Silence
 
-While a user is present and the zone is not `FROZEN` or `HOLD`, every
+While a user is present, the zone is not `FROZEN` or `HOLD`, and it is not a
+sleep window (§3.5), every
 `silenceEveryMin` minutes of continuous presence without a vote from that user,
 the engine applies one silence observation to both edges of that user's
 current-block model, using the latest `tin`. Implementations track
@@ -380,8 +400,9 @@ The nudge persists until the block changes (§5.3 step 3).
 
 ### 7.4 Occupied drift (entropy)
 
-While users are present and the state is `SEEDED`, `LEARNING` or `CONVERGED`,
-and `now ≥ drift.pausedUntil`:
+While users are present, the state is `SEEDED`, `LEARNING` or `CONVERGED`,
+`now ≥ drift.pausedUntil`, and it is not a sleep window (§3.5; there the value
+is frozen in place):
 
 ```
 conf  = min_u confidence(M_u)        # block-model confidence, §6.1
@@ -485,7 +506,8 @@ Applied last, after holds (§7.9) and whatever the state is (including `FROZEN`)
 ```
 if protect.max set and cool > protect.max:  cool = protect.max ; if cool − heat < minGap: heat = cool − minGap
 if protect.min set and heat < protect.min:  heat = protect.min ; if cool − heat < minGap: cool = heat + minGap
-(each rounded to setpointStep)
+(each rounded to setpointStep toward the inside of the limit: down for max, up for min,
+so the room settles inside the hysteresis band and protection can release)
 ```
 
 The engine also tracks whether the **room** is beyond a limit, with hysteresis so
@@ -514,7 +536,9 @@ silence, manual), no forgetting, no occupied or vacancy drift (both reset to
 
 ### 7.9 Hold
 
-`manual{applied}`: `hold ← {until: start of the next block, applied}`; for each
+`manual{applied, until?}`: `hold ← {until, applied, host: true}` when the
+host gave an `until` later than `now` (the host owns the timeout; such a hold
+survives block changes), else `hold ← {until: start of the next block, applied}`; for each
 present user apply a manual (direction-only) update: if `applied.cool` is lower
 than the engine's last output cool, or `applied.heat` is higher than the last
 output heat, treat as `hot`-for-cool / `cold`-for-heat respectively (lowering
@@ -554,7 +578,7 @@ Output object:
 
 `reasons` is a list of stable codes describing what contributed, in this
 order when applicable: `seed`, `adaptive`, `learned`, `conflict`, `nudge`, `drift`,
-`vacancy`, `precondition`, `recovering`, `hold`, `frozen`, `protect`, `limit`, `gap`.
+`vacancy`, `precondition`, `recovering`, `hold`, `frozen`, `sleep`, `protect`, `limit`, `gap`.
 
 ## 8. Block structure
 
@@ -600,7 +624,8 @@ skipped if there is one block) and a shift
 `Δ = trialShiftsMin[floor(rng()·len)]` minutes in the direction that lengthens
 the neighbour with the **lower energy use** — the block with the higher
 `cool` in the cooling season (trm ≥ coolingSeasonTrm), the lower `heat`
-otherwise; ties: later. The shift MUST keep every block ≥ `blockMinMin`.
+otherwise; ties: later. The shift MUST keep every block ≥ `blockMinMin`, and is skipped if the
+boundary's old or new time is inside a sleep window (§3.5).
 Store `{at, blockId, from, to}` in `structure.trials`.
 
 A trial is **reverted** (start restored) if any vote arrives within

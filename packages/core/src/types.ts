@@ -18,6 +18,8 @@ export interface ZoneConfig {
   setback: { heat: number; cool: number };
   /** §3.3 absolute indoor range that must never be crossed, e.g. to protect what is kept in the space */
   protect?: { min?: number; max?: number };
+  /** §3.5 times of day when present users are asleep: occupied drift frozen in place, no silence evidence, no trial shifts */
+  sleep?: { start: string; end: string }[];
   responseMin: number;
   params?: Partial<Params> & { seed?: number };
 }
@@ -156,7 +158,7 @@ export type EngineEvent =
   | { type: "reading"; now: string; tin: number; rh?: number; equip?: Equip; applied?: Applied }
   | { type: "weather"; now: string; out: number; high?: number; low?: number }
   | { type: "cost"; now: string; level: number }
-  | { type: "manual"; now: string; applied: Applied }
+  | { type: "manual"; now: string; applied: Applied; until?: string }
   | { type: "freeze"; now: string; on: boolean }
   | { type: "tick"; now: string }
   | { type: "restore"; now: string; snapshot: Snapshot };
@@ -254,7 +256,7 @@ export interface Snapshot {
   nudge: { delta: number; blockId: string | null };
   drift: { value: number; pausedUntil: number | null };
   vacancy: { since: number | null; value: number; recovering: boolean };
-  hold: { until: number; applied: Applied } | null;
+  hold: { until: number; applied: Applied; host?: boolean } | null;
   frozen: boolean;
   protecting: "max" | "min" | null;
   responseRate: number;

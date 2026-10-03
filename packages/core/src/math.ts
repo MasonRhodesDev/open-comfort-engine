@@ -118,6 +118,13 @@ export function mulberry32(state: number): [number, number] {
 export const clamp = (x: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, x));
 
 /** Round half up to a step, with the step's decimal precision (exact output). */
+/** Round to a setpoint step toward the inside of a limit: "down" for a max, "up" for a min. */
+export function roundStepToward(x: number, step: number, dir: "down" | "up"): number {
+  const decimals = Math.max(0, (String(step).split(".")[1] || "").length);
+  const k = dir === "down" ? Math.floor(x / step + 1e-9) : Math.ceil(x / step - 1e-9);
+  return Number((k * step).toFixed(decimals));
+}
+
 export function roundStep(x: number, step: number): number {
   const decimals = Math.max(0, (String(step).split(".")[1] || "").length);
   const v = Math.floor(x / step + 0.5 + 1e-9) * step;

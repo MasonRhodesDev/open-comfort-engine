@@ -31,6 +31,7 @@ import {
   product,
   quantile,
   roundStep,
+  roundStepToward,
   update,
 } from "./math";
 import { MIN, parseHHMM, parseWhen, When } from "./time";
@@ -124,6 +125,23 @@ export function blockAt(blocks: Block[], m: number): Block {
 
 function sortedBlocks(s: State): Block[] {
   return [...s.blocks].sort((a, b) => a.start - b.start);
+}
+
+/** §3.5: is local minute-of-day m inside a configured sleep window? */
+function inSleep(ctx: Ctx, m: number): boolean {
+  for (const w of ctx.cfg.sleep || []) {
+    const a = parseHHMM(w.start);
+    const e = parseHHMM(w.end);
+    if (a === e) continue;
+    if (a < e ? m >= a && m < e : m >= a || m < e) return true;
+  }
+  return false;
+}
+
+/** §3.5: present users asleep now */
+function sleeping(ctx: Ctx): boolean {
+  const s = ctx.s;
+  return s.presence.known && s.presence.users.length > 0 && inSleep(ctx, ctx.w.minute);
 }
 
 function blockLength(s: State, b: Block): number {
@@ -376,6 +394,8 @@ function trialShift(ctx: Ctx) {
   const lenBlk = blockLength(s, blk) + (lengthenPrev ? -delta : delta);
   if (lenPrev < p.blockMinMin || lenBlk < p.blockMinMin) return;
   const from = blk.start;
+  // §3.5: boundaries are never moved into, out of or within a sleep window
+  if (inSleep(ctx, from) || inSleep(ctx, newStart)) return;
   s.structure.trials.push({ at: ctx.w.t, blockId: blk.id, from, to: newStart });
   s.blocks.find((x) => x.id === blk.id)!.start = newStart;
   ctx.dirty = true;
@@ -577,8 +597,9 @@ function computeOutput(ctx: Ctx, b: Block): Output {
     else if (s.protecting === "min" && (prot.min === undefined || tin >= prot.min + hy)) s.protecting = null;
   }
   let protectedClamp = false;
-  if (prot.max !== undefined && cool > prot.max) { cool = roundStep(prot.max, cap.setpointStep); protectedClamp = true; if (cool - heat < cap.minGap - 1e-9) heat = roundStep(cool - cap.minGap, cap.setpointStep); }
-  if (prot.min !== undefined && heat < prot.min) { heat = roundStep(prot.min, cap.setpointStep); protectedClamp = true; if (cool - heat < cap.minGap - 1e-9) cool = roundStep(heat + cap.minGap, cap.setpointStep); }
+  // rounded toward the inside of the limit, so the room settles below the max (above the min) and protection can release
+  if (prot.max !== undefined && cool > prot.max) { cool = roundStepToward(prot.max, cap.setpointStep, "down"); protectedClamp = true; if (cool - heat < cap.minGap - 1e-9) heat = roundStepToward(cool - cap.minGap, cap.setpointStep, "down"); }
+  if (prot.min !== undefined && heat < prot.min) { heat = roundStepToward(prot.min, cap.setpointStep, "up"); protectedClamp = true; if (cool - heat < cap.minGap - 1e-9) cool = roundStepToward(heat + cap.minGap, cap.setpointStep, "up"); }
   if (s.protecting && !cap.modes.includes("auto")) {
     const want: Mode = s.protecting === "max" ? "cool" : "heat";
     if (cap.modes.includes(want)) mode = want;
@@ -595,6 +616,7 @@ function computeOutput(ctx: Ctx, b: Block): Output {
   if (st === "RECOVERING") reasons.push("recovering");
   if (st === "HOLD") reasons.push("hold");
   if (st === "FROZEN") reasons.push("frozen");
+  if (occupied && inSleep(ctx, ctx.w.minute)) reasons.push("sleep");
   if (protectedClamp || s.protecting) reasons.push("protect");
   if (limited) reasons.push("limit");
   if (gapped) reasons.push("gap");
@@ -760,7 +782,11 @@ function onManual(ctx: Ctx, b: Block, ev: Extract<EngineEvent, { type: "manual" 
   const s = ctx.s;
   const p = ctx.p;
   const t = ctx.w.t;
-  s.hold = { until: t + minutesToNextBoundary(s, ctx.w.minute) * MIN, applied: ev.applied };
+  // §7.9: the host may say how long the hold lasts; otherwise until the next block
+  const until = ev.until ? parseWhen(ev.until).t : null;
+  s.hold = until !== null && until > t
+    ? { until, applied: ev.applied, host: true }
+    : { until: t + minutesToNextBoundary(s, ctx.w.minute) * MIN, applied: ev.applied };
   const lo = s.lastOutput;
   if (!lo || s.frozen || !s.reading) return;
   const dirs = new Set<Dir>();
@@ -788,8 +814,9 @@ function advance(ctx: Ctx, b: Block, prevT: number | null) {
   const dtH = dtMin / 60;
   const st = stateName(ctx, b, t);
   const present = s.presence.known ? s.presence.users : [];
-  // §6.3 silence
-  if (s.reading && !s.frozen && st !== "HOLD") {
+  const asleep = sleeping(ctx);
+  // §6.3 silence (not while asleep: sleeping users can't vote, so silence says nothing)
+  if (s.reading && !s.frozen && st !== "HOLD" && !asleep) {
     for (const u of present) {
       const last = s.lastSilenceAt[u];
       if (last !== undefined && t - last >= p.silenceEveryMin * MIN) {
@@ -808,7 +835,9 @@ function advance(ctx: Ctx, b: Block, prevT: number | null) {
   const sinceBlockStart = (ctx.w.minute - b.start + 1440) % 1440;
   const sincePresence = s.presence.since === null ? dtMin : (t - s.presence.since) / MIN;
   const dtBlockH = Math.min(dtMin, sinceBlockStart, sincePresence) / 60;
-  if (present.length > 0 && (st === "SEEDED" || st === "LEARNING" || st === "CONVERGED") && (s.drift.pausedUntil === null || t >= s.drift.pausedUntil)) {
+  if (asleep) {
+    // §3.5: occupied drift freezes in place while present users are asleep (no growth, no reset)
+  } else if (present.length > 0 && (st === "SEEDED" || st === "LEARNING" || st === "CONVERGED") && (s.drift.pausedUntil === null || t >= s.drift.pausedUntil)) {
     const conf = minConfidence(ctx, b);
     const rate = (p.driftRateMax - (p.driftRateMax - p.driftRateMin) * conf) * (1 + p.costWeight * s.cost);
     const cap = p.driftCapMax - (p.driftCapMax - p.driftCapMin) * conf;
@@ -887,7 +916,7 @@ export function step(state: State, event: EngineEvent, config: ZoneConfig): Step
   let b = blockAt(s.blocks, w.minute);
   if (s.lastBlockId !== null && s.lastBlockId !== b.id) {
     s.nudge = { delta: 0, blockId: null };
-    s.hold = null;
+    if (s.hold && !s.hold.host) s.hold = null;   // a host-timed hold (§7.9) runs to its own end
     s.drift.value = 0;
   }
   if (s.hold && w.t >= s.hold.until) s.hold = null;

@@ -203,3 +203,52 @@ describe("0.2.0: protection limits", () => {
     expect(o.reasons).toContain("protect");
   });
 });
+
+describe("0.3.0: sleep windows, host-timed holds, protection rounding", () => {
+  const one = { ...house, seed: { blocks: [{ start: "00:00", heat: 20, cool: 24.4 }] } } as any;
+  it("drift freezes in place while present users are asleep, then resumes", () => {
+    const cfg = { ...one, sleep: [{ start: "13:00", end: "15:00" }] };
+    const evs: EngineEvent[] = [...base()];
+    for (const hh of ["10", "11", "12", "13"]) evs.push({ type: "tick", now: at(1, `${hh}:00`) });
+    let { s } = drive(evs, cfg);
+    const d = s.drift.value;
+    expect(d).toBeGreaterThan(0);
+    const models = JSON.stringify(s.models);
+    let r = step(s, { type: "tick", now: at(1, "13:30") }, cfg);
+    r = step(r.state, { type: "tick", now: at(1, "14:30") }, cfg);
+    expect(r.state.drift.value).toBe(d);                  // frozen, not reset
+    expect(JSON.stringify(r.state.models)).toBe(models);  // no silence evidence while asleep
+    expect(r.output.reasons).toContain("sleep");
+    r = step(r.state, { type: "tick", now: at(1, "15:30") }, cfg);
+    expect(r.state.drift.value).toBeGreaterThan(d);       // awake again: drift resumes
+    expect(r.output.reasons).not.toContain("sleep");
+  });
+  it("a sleep window wrapping midnight is honoured", () => {
+    const cfg = { ...one, sleep: [{ start: "22:00", end: "07:00" }] };
+    const evs: EngineEvent[] = [{ type: "weather", now: at(1, "23:05"), out: 20 }, { type: "presence", now: at(1, "23:06"), users: ["u1"] },
+      { type: "reading", now: at(1, "23:07"), tin: 24, equip: "idle" }, { type: "tick", now: at(2, "03:00") }];
+    const { s, outs } = drive(evs, cfg);
+    expect(s.drift.value).toBe(0);
+    expect(outs[outs.length - 1].reasons).toContain("sleep");
+  });
+  it("a host-given until sets the hold length, across a block change", () => {
+    const { s } = drive([...base(), { type: "manual", now: at(1, "15:30"), applied: { cool: 22 }, until: at(1, "17:00") }]);
+    let r = step(s, { type: "tick", now: at(1, "16:30") }, house);   // house blocks change at 16:00
+    expect(r.output.state).toBe("HOLD");
+    expect(r.output.cool).toBe(22);
+    r = step(r.state, { type: "tick", now: at(1, "17:01") }, house);
+    expect(r.output.state).not.toBe("HOLD");
+    const short = drive([...base(), { type: "manual", now: at(1, "10:00"), applied: { cool: 22 }, until: at(1, "10:30") }, { type: "tick", now: at(1, "10:31") }]);
+    expect(short.outs[short.outs.length - 1].state).not.toBe("HOLD");
+  });
+  it("protection rounds toward the inside of the limit", () => {
+    const cfg = { ...one, capabilities: { ...one.capabilities, setpointStep: 0.5, modes: ["heat", "cool", "off"] }, protect: { max: 29.4, min: 10.2 },
+      setback: { heat: 8, cool: 32 } };
+    const evs: EngineEvent[] = [{ type: "weather", now: at(1, "12:00"), out: 35 }, { type: "presence", now: at(1, "12:01"), users: [] }];
+    for (let hh = 13; hh <= 23; hh++) evs.push({ type: "tick", now: at(1, `${hh}:00`) });
+    const { outs } = drive(evs, cfg);
+    const o = outs[outs.length - 1];
+    expect(o.cool).toBe(29.0);
+    expect(o.reasons).toContain("protect");
+  });
+});

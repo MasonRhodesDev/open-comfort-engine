@@ -158,6 +158,29 @@
         }
       },
       "additionalProperties": false
+    },
+    "sleep": {
+      "type": "array",
+      "description": "\u00a73.5 local times of day when present users are asleep",
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "required": [
+          "start",
+          "end"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "start": {
+            "type": "string",
+            "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$"
+          },
+          "end": {
+            "type": "string",
+            "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$"
+          }
+        }
+      }
     }
   }
 }

@@ -31,6 +31,13 @@ from (`npm run sim`, `packages/core/test/sim.test.ts`).
   under what people notice), never past what a present person is likely to
   accept; vacancy drift is faster and stops at a setback, with recovery timed to
   an expected arrival if you supply one.
+- **Sleep windows.** Sleeping people can't complain, so inside a configured sleep
+  window drift freezes in place, silence counts for nothing and block boundaries
+  stay put.
+- **Protection limits.** An absolute indoor min/max (for what's kept in the space)
+  that overrides everything, including holds and freeze.
+- **Manual changes are holds** — until the next block, or until a time your
+  integration chooses.
 - **Blocks are learned too.** It starts from your schedule and splits, merges or
   nudges block boundaries as votes show where preferences really change.
 - **It adapts to the weather**: a warm week moves the whole band up a little, as
@@ -56,7 +63,7 @@ Until it's on npm, install a release tarball (Menu → Manage palette → Instal
 upload, or in your Node-RED user directory):
 
 ```sh
-npm install https://github.com/MasonRhodesDev/open-comfort-engine/releases/download/v0.1.1/node-red-contrib-open-comfort-engine-0.1.1.tgz
+npm install https://github.com/MasonRhodesDev/open-comfort-engine/releases/download/v0.3.0/node-red-contrib-open-comfort-engine-0.3.0.tgz
 ```
 
 Import `examples/basic.json` from the package. Feed the `comfort-engine` node:

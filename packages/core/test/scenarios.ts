@@ -174,6 +174,23 @@ export const scenarios: Scenario[] = [
       { type: "manual", now: at(1, "16:10"), applied: { cool: 30.0 } },
     ],
   },
+  {
+    name: "sleep-and-timed-hold",
+    description: "Occupied drift builds, then freezes in place inside a sleep window (no silence evidence, reason sleep) and resumes after it; a manual change with a host-given until holds across a block change and ends at until.",
+    config: { ...house, sleep: [{ start: "11:30", end: "13:30" }] },
+    steps: [
+      ...morning(1, ["u1"], 24.0),
+      { type: "tick", now: at(1, "11:00") },
+      { type: "tick", now: at(1, "12:00") },
+      { type: "tick", now: at(1, "13:00") },
+      { type: "tick", now: at(1, "14:00") },
+      { type: "tick", now: at(1, "15:00") },
+      { type: "tick", now: at(1, "15:30") },
+      { type: "manual", now: at(1, "15:40"), applied: { cool: 22.5 }, until: at(1, "16:40") },
+      { type: "tick", now: at(1, "16:10") },
+      { type: "tick", now: at(1, "16:41") },
+    ],
+  },
   splitScenario(),
 ];
 
