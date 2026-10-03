@@ -175,3 +175,31 @@ describe("0.1.1: outdoor running mean", () => {
     expect(() => step(restore(s), { type: "tick", now: at(1, "10:00") }, house)).not.toThrow();
   });
 });
+
+describe("0.2.0: protection limits", () => {
+  const office = { ...house, id: "office", capabilities: { ...house.capabilities, modes: ["heat", "cool", "off"] as const },
+    seed: { blocks: [{ start: "00:00", heat: 19, cool: 24.5 }] }, setback: { heat: 15, cool: 30 }, protect: { min: 10, max: 29.4 } } as any;
+  it("an empty office in a heat wave: cooling capped at max, protect engages at max and releases with hysteresis", () => {
+    const evs: EngineEvent[] = [
+      { type: "weather", now: at(1, "12:00"), out: 40, high: 40, low: 22 },
+      { type: "presence", now: at(1, "12:01"), users: [] },
+    ];
+    for (let h = 13; h <= 20; h++) evs.push({ type: "tick", now: at(1, `${h}:00`) });
+    evs.push({ type: "reading", now: at(1, "20:30"), tin: 29.6, equip: "idle" });
+    evs.push({ type: "reading", now: at(1, "20:45"), tin: 29.0, equip: "cool" });
+    evs.push({ type: "reading", now: at(1, "21:00"), tin: 28.3, equip: "cool" });
+    const { outs } = drive(evs, office);
+    for (const o of outs) expect(o.cool).toBeLessThanOrEqual(29.4 + 1e-9); // vacancy drift never past max
+    expect(outs[outs.length - 3].protect).toBe("max");
+    expect(outs[outs.length - 3].mode).toBe("cool");
+    expect(outs[outs.length - 2].protect).toBe("max"); // 29.0 > 29.4 - 1.0
+    expect(outs[outs.length - 1].protect).toBe(null);  // 28.3 <= 28.4
+  });
+  it("protection overrides a manual hold and freeze", () => {
+    const cfg = { ...house, protect: { max: 26 } } as any;
+    const { outs } = drive([...base(), { type: "freeze", now: at(1, "09:10"), on: true }, { type: "manual", now: at(1, "09:20"), applied: { cool: 30 } }], cfg);
+    const o = outs[outs.length - 1];
+    expect(o.cool).toBeLessThanOrEqual(26);
+    expect(o.reasons).toContain("protect");
+  });
+});

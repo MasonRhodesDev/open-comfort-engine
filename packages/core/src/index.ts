@@ -4,7 +4,7 @@ export { init, step, restore, serialize, params, blockAt } from "./engine";
 export { phi, erfc, mulberry32 } from "./math";
 export { parseWhen } from "./time";
 
-export const SPEC_VERSION = "0.1.1";
+export const SPEC_VERSION = "0.2.0";
 
 /** °F <-> °C helpers for hosts; the engine itself is °C only. */
 export const fToC = (f: number): number => ((f - 32) * 5) / 9;

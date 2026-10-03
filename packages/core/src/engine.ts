@@ -70,6 +70,7 @@ export function init(config: ZoneConfig): State {
     vacancy: { since: null, value: 0, recovering: false },
     hold: null,
     frozen: false,
+    protecting: null,
     responseRate: p.responseRateDefault,
     structure: { rng: (config.params?.seed ?? 1) >>> 0, lastRunDate: null, trials: [], votes: [] },
     cost: 0,
@@ -88,6 +89,7 @@ export function restore(snapshot: Snapshot): State {
   if (snapshot.snapshotVersion !== 1) throw new Error("unsupported snapshotVersion " + snapshot.snapshotVersion);
   const s = JSON.parse(JSON.stringify(snapshot));
   if (s.day && s.day.hl === undefined) s.day.hl = null; // 0.1.0 snapshots
+  if (s.protecting === undefined) s.protecting = null; // < 0.2.0 snapshots
   return s;
 }
 
@@ -552,7 +554,8 @@ function computeOutput(ctx: Ctx, b: Block): Output {
     const want: Mode = coolingSeason(ctx) ? "cool" : "heat";
     mode = cap.modes.includes(want) ? want : cap.modes[0];
   }
-  if (st === "HOLD" && s.hold) {
+  // a manual hold applies whatever the state name (FROZEN outranks HOLD in naming, not in effect)
+  if (s.hold && t < s.hold.until) {
     const ha = s.hold.applied;
     if (ha.heat !== undefined) heat = ha.heat;
     if (ha.cool !== undefined) cool = ha.cool;
@@ -562,6 +565,23 @@ function computeOutput(ctx: Ctx, b: Block): Output {
       if (ha.cool !== undefined && ha.heat === undefined) heat = roundStep(Math.max(cap.heat.min, cool - cap.minGap), cap.setpointStep);
       else if (ha.heat !== undefined && ha.cool === undefined) cool = roundStep(Math.min(cap.cool.max, heat + cap.minGap), cap.setpointStep);
     }
+  }
+  // §7.12 protection: an absolute indoor range, applied last (over holds and freeze)
+  const prot = ctx.cfg.protect || {};
+  const tin = s.reading ? s.reading.tin : null;
+  if (tin !== null) {
+    const hy = p.protectHysteresis;
+    if (prot.max !== undefined && tin >= prot.max) s.protecting = "max";
+    else if (prot.min !== undefined && tin <= prot.min) s.protecting = "min";
+    else if (s.protecting === "max" && (prot.max === undefined || tin <= prot.max - hy)) s.protecting = null;
+    else if (s.protecting === "min" && (prot.min === undefined || tin >= prot.min + hy)) s.protecting = null;
+  }
+  let protectedClamp = false;
+  if (prot.max !== undefined && cool > prot.max) { cool = roundStep(prot.max, cap.setpointStep); protectedClamp = true; if (cool - heat < cap.minGap - 1e-9) heat = roundStep(cool - cap.minGap, cap.setpointStep); }
+  if (prot.min !== undefined && heat < prot.min) { heat = roundStep(prot.min, cap.setpointStep); protectedClamp = true; if (cool - heat < cap.minGap - 1e-9) cool = roundStep(heat + cap.minGap, cap.setpointStep); }
+  if (s.protecting && !cap.modes.includes("auto")) {
+    const want: Mode = s.protecting === "max" ? "cool" : "heat";
+    if (cap.modes.includes(want)) mode = want;
   }
   const conflict = occupied && b.cool + sh.cool - (b.heat + sh.heat) < cap.minGap - 1e-9;
   if (sh.cool === 0 && sh.heat === 0) reasons.push("seed");
@@ -575,6 +595,7 @@ function computeOutput(ctx: Ctx, b: Block): Output {
   if (st === "RECOVERING") reasons.push("recovering");
   if (st === "HOLD") reasons.push("hold");
   if (st === "FROZEN") reasons.push("frozen");
+  if (protectedClamp || s.protecting) reasons.push("protect");
   if (limited) reasons.push("limit");
   if (gapped) reasons.push("gap");
   if (conflict) {
@@ -598,6 +619,7 @@ function computeOutput(ctx: Ctx, b: Block): Output {
     nudge: s.nudge.delta,
     drift: occupied ? Math.max(driftCool, driftHeat) : 0,
     vacancy: vacantKnown ? s.vacancy.value : 0,
+    protect: s.protecting,
   };
 }
 
@@ -923,7 +945,7 @@ export function step(state: State, event: EngineEvent, config: ZoneConfig): Step
 
 function finishOutput(ctx: Ctx, out: Output) {
   const lo = ctx.s.lastOutput;
-  if (!lo || lo.heat !== out.heat || lo.cool !== out.cool || lo.mode !== out.mode || lo.state !== out.state) {
+  if (!lo || lo.heat !== out.heat || lo.cool !== out.cool || lo.mode !== out.mode || lo.state !== out.state || (lo.protect ?? null) !== out.protect) {
     ctx.rec("decision", { ...out });
   }
   ctx.s.lastOutput = out;
@@ -954,5 +976,6 @@ function emptyOutput(state: State, config: ZoneConfig): Output {
     nudge: 0,
     drift: 0,
     vacancy: 0,
+    protect: null,
   };
 }

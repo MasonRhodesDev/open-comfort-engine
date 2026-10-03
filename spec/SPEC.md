@@ -1,6 +1,6 @@
 # Open Comfort Engine — Specification
 
-Version: **0.1.1** (draft)
+Version: **0.2.0** (draft)
 Status: normative. The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are
 to be interpreted as described in RFC 2119.
 
@@ -86,6 +86,7 @@ Every block MUST satisfy `cool − heat ≥ capabilities.minGap`.
 | `setback.heat` | lowest heating setpoint vacancy drift may reach |
 | `setback.cool` | highest cooling setpoint vacancy drift may reach |
 | `responseMin` | typical minutes for the room to respond to a setpoint change |
+| `protect.min` / `protect.max` | optional absolute indoor range (°C) that must never be crossed — e.g. to protect electronics, plants or pets kept in the space. Overrides everything else, including holds and freeze (§7.12) |
 
 ### 3.4 Parameters (`params`, all optional)
 
@@ -137,6 +138,7 @@ Defaults are normative. Hosts MAY override within the allowed range.
 | `structureVotesFull` | 100 | — | §8.4 |
 | `voteHistoryDays` | 30 | — | §8.2 |
 | `snapshotEveryMin` | 60 | — | §9 |
+| `protectHysteresis` | 1.0 | 0.2–3 | §7.12 |
 
 ## 4. Events
 
@@ -170,6 +172,7 @@ rejected with a `{type:"rejected", reason:"type"}` record.
 - `vacancy` — `{since, value}` (§7.6).
 - `hold` — `{until, applied}` or null (§7.9).
 - `frozen` — boolean.
+- `protecting` — `"max"`, `"min"` or null (§7.12).
 - `responseRate` — learned °C/min (§7.7).
 - `structure` — `{rng, lastRunDate, trials[], votes[]}` (§8).
 - `cost` — last level (default 0).
@@ -475,6 +478,33 @@ Only tightening is applied early; loosening waits for the boundary.
 While vacant and `RECOVERING` (§7.7), if `expectedUsers` is given the recovery
 target is the current block's band for those users.
 
+### 7.12 Protection
+
+Applied last, after holds (§7.9) and whatever the state is (including `FROZEN`):
+
+```
+if protect.max set and cool > protect.max:  cool = protect.max ; if cool − heat < minGap: heat = cool − minGap
+if protect.min set and heat < protect.min:  heat = protect.min ; if cool − heat < minGap: cool = heat + minGap
+(each rounded to setpointStep)
+```
+
+The engine also tracks whether the **room** is beyond a limit, with hysteresis so
+a device does not short-cycle at the threshold:
+
+```
+protecting = "max"  when tin ≥ protect.max ; stays until tin ≤ protect.max − protectHysteresis
+protecting = "min"  when tin ≤ protect.min ; stays until tin ≥ protect.min + protectHysteresis
+```
+
+`output.protect` is `protecting` (`"max"`, `"min"` or `null`), and the reason
+`protect` is added while clamping or protecting. For a device without `auto`,
+`mode` becomes `cool` (`heat`) while protecting the max (min).
+
+**While `output.protect` is not null, hosts MUST actuate toward the output even
+when their own policy would otherwise leave the device off** (the zone is empty,
+quiet hours, an automation switch is off, a manual hold). This is the one place
+the engine's output overrides site policy.
+
 ### 7.8 Freeze
 
 `freeze{on:true}` sets `frozen`. While frozen: no posterior updates (votes,
@@ -489,7 +519,7 @@ present user apply a manual (direction-only) update: if `applied.cool` is lower
 than the engine's last output cool, or `applied.heat` is higher than the last
 output heat, treat as `hot`-for-cool / `cold`-for-heat respectively (lowering
 cool ⇒ `hot`, raising heat ⇒ `cold`, raising cool ⇒ `cold`, lowering heat ⇒ `hot`);
-if both moved in conflicting directions, no update. While `HOLD`, the output
+if both moved in conflicting directions, no update. While the hold is active (whether the state is reported as `HOLD` or `FROZEN`), the output
 equals `hold.applied` (fields not given fall back to the computed value); if
 that leaves `cool − heat < minGap`, the side *not* given in `hold.applied` moves
 to restore the gap (within its capability limits, rounded to `setpointStep`).
@@ -518,12 +548,13 @@ Output object:
 
 ```
 { heat, cool, mode, state, block: b.id,
-  reasons: [string], confidence, coolShift, heatShift, adaptive: A, nudge, drift, vacancy }
+  reasons: [string], confidence, coolShift, heatShift, adaptive: A, nudge, drift, vacancy,
+  protect: "max" | "min" | null }
 ```
 
 `reasons` is a list of stable codes describing what contributed, in this
 order when applicable: `seed`, `adaptive`, `learned`, `conflict`, `nudge`, `drift`,
-`vacancy`, `precondition`, `recovering`, `hold`, `frozen`, `limit`, `gap`.
+`vacancy`, `precondition`, `recovering`, `hold`, `frozen`, `protect`, `limit`, `gap`.
 
 ## 8. Block structure
 

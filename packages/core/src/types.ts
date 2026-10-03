@@ -16,6 +16,8 @@ export interface ZoneConfig {
   };
   seed: { blocks: SeedBlock[] };
   setback: { heat: number; cool: number };
+  /** §3.3 absolute indoor range that must never be crossed, e.g. to protect what is kept in the space */
+  protect?: { min?: number; max?: number };
   responseMin: number;
   params?: Partial<Params> & { seed?: number };
 }
@@ -84,6 +86,7 @@ export interface Params {
   structureVotesFull: number;
   voteHistoryDays: number;
   snapshotEveryMin: number;
+  protectHysteresis: number;
 }
 
 export const DEFAULT_PARAMS: Params = {
@@ -143,6 +146,7 @@ export const DEFAULT_PARAMS: Params = {
   structureVotesFull: 100,
   voteHistoryDays: 30,
   snapshotEveryMin: 60,
+  protectHysteresis: 1.0,
 };
 
 /** §4 */
@@ -180,6 +184,8 @@ export interface Output {
   nudge: number;
   drift: number;
   vacancy: number;
+  /** §7.12: the room is beyond a protection limit; hosts MUST actuate toward the output */
+  protect: "max" | "min" | null;
 }
 
 export type FeedbackCode = "nudge.cooler" | "nudge.warmer" | "noted.cooldown" | "noted.hold" | "noted.no_reading";
@@ -250,6 +256,7 @@ export interface Snapshot {
   vacancy: { since: number | null; value: number; recovering: boolean };
   hold: { until: number; applied: Applied } | null;
   frozen: boolean;
+  protecting: "max" | "min" | null;
   responseRate: number;
   structure: { rng: number; lastRunDate: string | null; trials: Trial[]; votes: VoteHist[] };
   cost: number;

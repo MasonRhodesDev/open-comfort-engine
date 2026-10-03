@@ -16,7 +16,8 @@
     "adaptive",
     "nudge",
     "drift",
-    "vacancy"
+    "vacancy",
+    "protect"
   ],
   "properties": {
     "heat": {
@@ -62,6 +63,7 @@
           "recovering",
           "hold",
           "frozen",
+          "protect",
           "limit",
           "gap"
         ]
@@ -91,6 +93,13 @@
     "vacancy": {
       "type": "number",
       "minimum": 0
+    },
+    "protect": {
+      "enum": [
+        "max",
+        "min",
+        null
+      ]
     }
   },
   "additionalProperties": false

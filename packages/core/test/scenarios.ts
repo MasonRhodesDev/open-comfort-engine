@@ -158,6 +158,22 @@ export const scenarios: Scenario[] = [
       { type: "tick", now: at(1, "09:31") },
     ],
   },
+  {
+    name: "protect",
+    description: "An empty zone in a heat wave: vacancy drift is capped at protect.max; when the room reaches max, output.protect is \"max\" until it falls protectHysteresis below; protection also overrides a manual hold.",
+    config: { ...house, protect: { min: 12, max: 27 } },
+    steps: [
+      { type: "weather", now: at(1, "12:00"), out: 40, high: 40, low: 22 },
+      { type: "presence", now: at(1, "12:01"), users: [] },
+      { type: "reading", now: at(1, "12:02"), tin: 25.0, equip: "idle" },
+      { type: "tick", now: at(1, "14:00") },
+      { type: "tick", now: at(1, "15:00") },
+      { type: "reading", now: at(1, "15:30"), tin: 27.2, equip: "idle" },
+      { type: "reading", now: at(1, "15:45"), tin: 26.5, equip: "cool" },
+      { type: "reading", now: at(1, "16:00"), tin: 25.9, equip: "cool" },
+      { type: "manual", now: at(1, "16:10"), applied: { cool: 30.0 } },
+    ],
+  },
   splitScenario(),
 ];
 

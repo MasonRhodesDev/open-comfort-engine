@@ -1,6 +1,6 @@
 {
   "name": "open-comfort-engine",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Reference implementation of the Open Comfort Engine spec: learns comfort from too-hot/too-cold votes and drifts setpoints toward idle. Pure, zero dependencies, no I/O.",
   "license": "MIT",
   "type": "module",

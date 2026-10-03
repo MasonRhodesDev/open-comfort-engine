@@ -330,6 +330,13 @@
         "number",
         "null"
       ]
+    },
+    "protecting": {
+      "enum": [
+        "max",
+        "min",
+        null
+      ]
     }
   }
 }
