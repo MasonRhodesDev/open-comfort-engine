@@ -73,6 +73,9 @@ export function restore(snapshot: Snapshot, config?: ZoneConfig): State {
     const s = JSON.parse(JSON.stringify(snapshot)) as State;
     if (!s.releasedAt) s.releasedAt = { heat: null, cool: null };
     if (!s.quiet || !("lastAt" in s.quiet)) s.quiet = { lastAt: null };
+    // a curve that has never learned a vote is as good as fresh: history (a vote replay) is accepted (§9)
+    const taught = SIDES.some((side) => s.curve[side.key].some((k) => k.n > 0));
+    if (!taught) s.lastEventAt = null;
     return s;
   }
   // 0.1–0.4 snapshots: the tolerance curve starts fresh (hosts replay their vote records, §9);

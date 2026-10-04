@@ -336,6 +336,12 @@ describe("state machine (§5, §9)", () => {
     expect(rr.effects.records.some((x) => x.type === "rejected")).toBe(false);
     expect(rr.state.curve.cool.length).toBe(6);
     expect(rr.state.lastEventAt).toBeNull();
+    // a v3 snapshot that never learned a vote accepts history too (the host replays its records after restoring)
+    const untaught = drive([...base(24.2), { type: "tick", now: at(2, "12:00") }]).s;
+    const rt = step(init(house), { type: "restore", now: at(2, "12:01"), snapshot: untaught }, house);
+    expect(rt.state.lastEventAt).toBeNull();
+    const replayed = step(rt.state, { type: "vote", now: at(1, "09:20"), user: "u1", dir: "hot" }, house);
+    expect(replayed.effects.records.some((x) => x.type === "rejected")).toBe(false);
     const bad = step(init(house), { type: "restore", now: at(1, "12:00"), snapshot: { snapshotVersion: 9 } as any }, house);
     expect(bad.effects.records[0]).toMatchObject({ type: "rejected", reason: "snapshot" });
   });

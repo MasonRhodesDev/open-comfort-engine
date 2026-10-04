@@ -1,6 +1,6 @@
 # Open Comfort Engine — Specification
 
-Version: **0.5.0-rc.3** (release candidate)
+Version: **0.5.0-rc.4** (release candidate)
 Status: normative. The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are
 to be interpreted as described in RFC 2119.
 
@@ -533,6 +533,9 @@ events at their original times) so the curve starts from real data.
 
 Migrating also happens when a version-3 snapshot was built with other grid or
 knot parameters (its `seedKey` differs): the curve and thermal model restart.
+A restored curve that has never learned a vote (every knot's `n` is 0) is as
+good as fresh: `lastEventAt` is cleared so that a replay of older events is
+accepted.
 The engine emits `effects.snapshot` after any event that changed the curve,
 the thermal model or `frozen`, or that produced a `decision` record (so a
 restored snapshot's `lastOutput` is the output actually published), and
