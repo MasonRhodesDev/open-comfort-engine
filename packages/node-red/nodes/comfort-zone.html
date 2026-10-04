@@ -40,7 +40,9 @@
   <dl class="message-properties">
     <dt>capabilities</dt><dd>modes, <code>minGap</code> (smallest cool−heat the device accepts in auto), <code>setpointStep</code>, heat/cool min/max.</dd>
     <dt>seed.blocks</dt><dd>The starting schedule: <code>{start:"HH:MM", heat, cool}</code>. The engine starts here and learns from votes.</dd>
-    <dt>setback</dt><dd>How far vacancy drift may go: lowest heat and highest cool setpoint.</dd>
+    <dt>setback</dt><dd>The band when nobody is home, and what a side set to by the outdoor air is released to: lowest heat and highest cool setpoint.</dd>
+    <dt>protect</dt><dd>Optional absolute indoor <code>min</code>/<code>max</code> that is never crossed (overrides everything).</dd>
+    <dt>sleep</dt><dd>Optional <code>[{start:"HH:MM", end:"HH:MM"}]</code> windows when people are asleep: no widening, no silence evidence.</dd>
     <dt>responseMin</dt><dd>Typical minutes for the room to respond to a change.</dd>
     <dt>params</dt><dd>Optional overrides of the spec's parameters (always in °C).</dd>
   </dl>

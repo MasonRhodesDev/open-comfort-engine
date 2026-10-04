@@ -14,17 +14,15 @@
     "lastSilenceAt",
     "reading",
     "weather",
-    "trm",
-    "day",
+    "risk",
+    "paused",
     "nudge",
-    "drift",
-    "vacancy",
-    "hold",
+    "released",
     "frozen",
+    "protecting",
     "responseRate",
     "structure",
     "cost",
-    "lastShift",
     "conflictDay",
     "lastOutput",
     "lastBlockId",
@@ -33,7 +31,7 @@
   ],
   "properties": {
     "snapshotVersion": {
-      "const": 1
+      "const": 2
     },
     "zone": {
       "type": "string"
@@ -214,63 +212,31 @@
         }
       ]
     },
-    "trm": {
-      "type": [
-        "number",
-        "null"
-      ]
-    },
-    "day": {
-      "type": "object",
-      "required": [
-        "date",
-        "sum",
-        "n"
-      ],
-      "properties": {
-        "hl": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
-      }
-    },
     "nudge": {
       "type": "object",
       "required": [
-        "delta",
+        "heat",
+        "cool",
         "blockId"
-      ]
-    },
-    "drift": {
-      "type": "object",
-      "required": [
-        "value",
-        "pausedUntil"
-      ]
-    },
-    "vacancy": {
-      "type": "object",
-      "required": [
-        "since",
-        "value",
-        "recovering"
-      ]
-    },
-    "hold": {
-      "oneOf": [
-        {
-          "type": "null"
+      ],
+      "properties": {
+        "heat": {
+          "type": "number"
         },
-        {
-          "type": "object",
-          "required": [
-            "until",
-            "applied"
+        "cool": {
+          "type": "number"
+        },
+        "blockId": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string"
+            }
           ]
         }
-      ]
+      }
     },
     "frozen": {
       "type": "boolean"
@@ -296,9 +262,6 @@
     },
     "cost": {
       "type": "number"
-    },
-    "lastShift": {
-      "type": "object"
     },
     "conflictDay": {
       "type": "object"
@@ -337,6 +300,68 @@
         "min",
         null
       ]
+    },
+    "risk": {
+      "type": "object",
+      "required": [
+        "heat",
+        "cool"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "heat": {
+          "type": "number"
+        },
+        "cool": {
+          "type": "number"
+        }
+      }
+    },
+    "paused": {
+      "type": "object",
+      "required": [
+        "heat",
+        "cool"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "heat": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
+        "cool": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        }
+      }
+    },
+    "released": {
+      "type": "object",
+      "required": [
+        "heat",
+        "cool"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "heat": {
+          "type": "boolean"
+        },
+        "cool": {
+          "type": "boolean"
+        }
+      }
     }
   }
 }

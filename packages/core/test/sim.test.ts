@@ -5,14 +5,17 @@ import { simulate, type DayStats } from "./sim/sim";
 import { household } from "./sim/household";
 import { house } from "./fixtures";
 
-const STATIC = { driftRateMax: 0, driftRateMin: 0, leashBase: 0, leashGain: 0, stepInit: 1e-4, stepMin: 1e-4, stepMax: 1e-4 };
+// a plain programmable thermostat: the seed schedule, nothing learned (frozen from day 0), no nudge,
+// no release, no pre-conditioning, no risk
+const STATIC = { riskRate: 0, nudgeMax: 0, natureMargin: 99, preconditionMaxMin: 0 };
+const staticSim = (days: number, seed: number) => simulate(household(days, { seed, freezeAfterDay: 0, config: { ...house, params: STATIC } }));
 const sum = (st: DayStats[], a: number, b: number, k: "votes" | "uncomfortableMin" | "hvacMin") => st.slice(a, b).reduce((x, s) => x + s[k], 0);
 
 describe("household simulation (42 days)", () => {
   for (const seed of [7, 11]) {
     it(`seed ${seed}: less discomfort and less HVAC than the static schedule, fewer votes over time`, () => {
       const eng = simulate(household(42, { seed })).stats;
-      const sta = simulate(household(42, { seed, config: { ...house, params: STATIC } })).stats;
+      const sta = staticSim(42, seed).stats;
       expect(sum(eng, 35, 42, "uncomfortableMin")).toBeLessThan(0.8 * sum(sta, 35, 42, "uncomfortableMin"));
       expect(sum(eng, 35, 42, "hvacMin")).toBeLessThan(0.9 * sum(sta, 35, 42, "hvacMin"));
       expect(sum(eng, 35, 42, "votes")).toBeLessThanOrEqual(sum(eng, 0, 7, "votes"));

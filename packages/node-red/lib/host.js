@@ -36,7 +36,6 @@ const FEEDBACK_EN = {
   "nudge.cooler": "Cooling it down a bit for you.",
   "nudge.warmer": "Warming it up a bit for you.",
   "noted.cooldown": "Noted. Give it a few minutes to catch up.",
-  "noted.hold": "Noted. Someone set the thermostat by hand, so I'll leave it for now.",
   "noted.no_reading": "Noted. I can't read the room temperature right now.",
 };
 

@@ -40,13 +40,13 @@ module.exports = function (RED) {
       const o = r.output;
       const outMsg = {
         topic: zone.id,
-        payload: { heat: toUnits(o.heat), cool: toUnits(o.cool), mode: o.mode, state: o.state, units },
+        payload: { heat: toUnits(o.heat), cool: toUnits(o.cool), mode: o.mode, state: o.state, units, released: o.released, protect: o.protect, blockEnd: o.blockEnd },
         engine: o,
       };
       const recs = r.effects.records.map((rec) => ({ topic: rec.type, payload: rec }));
       const snap = r.effects.snapshot ? { topic: "snapshot", payload: r.effects.snapshot } : null;
       const fb = r.effects.feedback ? { topic: r.effects.feedback, payload: FEEDBACK_EN[r.effects.feedback] || r.effects.feedback, event } : null;
-      node.status({ fill: o.state === "FROZEN" ? "grey" : o.state === "HOLD" ? "yellow" : "green", shape: "dot",
+      node.status({ fill: o.state === "FROZEN" ? "grey" : o.protect ? "red" : o.state === "VACANT" ? "blue" : "green", shape: "dot",
         text: `${o.state} ${toUnits(o.heat)}–${toUnits(o.cool)}° ${o.reasons.filter((x) => x !== "seed").join(",")}` });
       // setpoints when the decision changed (the engine emits a `decision` record then), on the
       // first step after start and after a restore (consumers may hold a stale value), or on every

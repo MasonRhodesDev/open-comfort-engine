@@ -1,6 +1,6 @@
 # Open Comfort Engine — Specification
 
-Version: **0.3.0** (draft)
+Version: **0.4.0** (draft)
 Status: normative. The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are
 to be interpreted as described in RFC 2119.
 
@@ -14,9 +14,26 @@ reference implementation has a bug.
 ## 1. Purpose and scope
 
 The engine turns occupants' "too hot" / "too cold" votes into heating and
-cooling setpoints for one climate **zone**, learning each occupant's comfort
-over time, and spends any slack it finds on saving energy ("entropy": a slow
-drift of setpoints toward idle that decays as it becomes confident).
+cooling setpoints for one climate **zone**. It is one loop, run on every event:
+
+```
+sense  →  band  →  act  →  learn
+```
+
+- **Sense**: the room temperature, the outdoor temperature, who is present (and
+  whether they are asleep), and votes — all supplied by the host as events.
+- **Band**: the range of room temperatures everyone present accepts, at the
+  current **risk** level, never wider than the configured protection limits.
+  With nobody present the band is the setback range.
+- **Act**: the device stays idle while the room is inside the band, or outside
+  it but drifting toward it by itself (the outdoor air is doing the work).
+  Otherwise the device conditions the room to the nearest edge of the band.
+- **Learn**: a vote moves that person's edge and lowers risk on that side;
+  quiet time with people awake raises risk slowly; sleep freezes it.
+
+Energy is saved by two things only: the band widens as the engine gains
+confidence (risk), and a side of the band whose job the outdoor air is already
+doing is released.
 
 The engine is a pure state machine:
 
@@ -35,9 +52,24 @@ step(state, event, config) -> { state', output, effects }
   actually applied (§5.4).
 
 Out of scope (host / integration concerns): identity, presence detection,
-arrival prediction, weather fetching, tariffs, actuation, persistence,
-user-facing wording, site rules (quiet hours, pre-cooling for peak pricing,
-holiday modes, …).
+arrival prediction, weather fetching, tariffs, actuation, manual-override
+holds and their timeouts, persistence, user-facing wording, site rules (quiet
+hours, pre-cooling for peak pricing, holiday modes, …).
+
+### 1.1 Sides
+
+Everything the engine does to a setpoint it does to **a side**. A side is one
+edge of the band:
+
+| side | edge | sign `σ` | device limit | protection limit |
+|---|---|---|---|---|
+| `cool` | `upper` (warmest accepted) | `+1` | `capabilities.cool` | `protect.max` |
+| `heat` | `lower` (coolest accepted) | `−1` | `capabilities.heat` | `protect.min` |
+
+"Inward" means toward the middle of the band: `edge − σ·x` moves edge `x`
+inward; "outward" is `edge + σ·x`. The sign lets every rule below be written
+once; an implementation MUST NOT contain a heat version and a cool version of
+the same rule.
 
 ## 2. Units, time and numbers
 
@@ -53,8 +85,9 @@ holiday modes, …).
   last processed event MUST be rejected (no state change, `effects.records`
   contains one `{type:"rejected", reason:"time"}` record).
 - Floating point: IEEE-754 binary64. Conformance compares numbers with the
-  tolerances in `CONFORMANCE.md`. Outputs (setpoints) are rounded to the
-  device setpoint step (§3.1) with round-half-up, which makes them exact.
+  tolerances in `CONFORMANCE.md`. Setpoints are rounded to the device setpoint
+  step (§3.1) **inward** (`floor` for the `cool` side, `ceil` for `heat`,
+  with a 1e−9 tolerance), which makes them exact and never past a limit.
 
 ## 3. Configuration (`ZoneConfig`)
 
@@ -83,12 +116,22 @@ Every block MUST satisfy `cool − heat ≥ capabilities.minGap`.
 
 | field | meaning |
 |---|---|
-| `setback.heat` | lowest heating setpoint vacancy drift may reach |
-| `setback.cool` | highest cooling setpoint vacancy drift may reach |
-| `responseMin` | typical minutes for the room to respond to a setpoint change |
-| `protect.min` / `protect.max` | optional absolute indoor range (°C) that must never be crossed — e.g. to protect electronics, plants or pets kept in the space. Overrides everything else, including holds and freeze (§7.12) |
+| `setback.heat` / `setback.cool` | the band when nobody is present, and the value a **released** side takes (§7.4) |
+| `protect.min` / `protect.max` | optional absolute indoor range (°C) that must never be crossed — e.g. to protect electronics, plants or pets kept in the space. Overrides everything else (§7.6) |
+| `responseMin` | typical minutes for the room to respond to a setpoint change (stall detection, §7.2) |
 
-### 3.4 Parameters (`params`, all optional)
+### 3.4 Sleep windows
+
+`sleep`: an optional list of up to 4 `{ start: "HH:MM", end: "HH:MM" }` local
+times of day when the zone's present users are asleep (a window MAY wrap
+midnight; `start = end` is ignored). Sleeping users cannot vote, so while the
+local minute is inside a window and at least one user is present: risk is
+frozen in place (§7.3), no silence observations are made (§6.3), and no trial
+shift moves a boundary that starts or ends inside a window (§8.4). The output
+carries the reason `sleep`. Like the seed, the windows are the host's knowledge
+about its occupants; the engine only applies them.
+
+### 3.5 Parameters (`params`, all optional)
 
 Defaults are normative. Hosts MAY override within the allowed range.
 
@@ -96,67 +139,41 @@ Defaults are normative. Hosts MAY override within the allowed range.
 |---|---|---|---|
 | `gridMin` / `gridMax` / `gridStep` | 14 / 32 / 0.1 | — | §6.1 |
 | `priorSigma` | 1.5 | 0.5–4 | §6.1 |
-| `adaptiveSlope` (k) | 0.10 | 0–0.4 | §6.1 |
-| `adaptiveRef` | 20 | — | §6.1 |
-| `adaptiveTrmMin` / `adaptiveTrmMax` | 10 / 33.5 | — | §7.2a |
-| `voteNoise` (s) | 0.7 | 0.2–2 | §6.2 |
+| `voteNoise` | 0.7 | 0.2–2 | §6.2 |
 | `silenceSigma` | 2.0 | 0.5–5 | §6.2 |
 | `silenceWeight` | 0.3 | 0–1 | §6.2 |
 | `silenceEveryMin` | 60 | 15–1440 | §6.3 |
 | `manualWeight` | 0.5 | 0–1 | §6.2 |
 | `forget` | 0.02 | 0–0.2 | §6.4 |
-| `trmAlpha` | 0.8 | 0–0.99 | §6.5 |
-| `coolingSeasonTrm` | 18 | — | §7.2 |
-| `qLow` / `qHigh` | 0.2 / 0.8 | — | §7.2 |
-| `leashBase` / `leashGain` | 1.0 / 2.0 | — | §7.2 |
-| `stepInit` / `stepMin` / `stepMax` | 1.0 / 0.3 / 2.0 | — | §7.3 |
-| `stepGrow` | 1.25 | 1–2 | §7.3 |
-| `cooldownMin` | 30 | 0–240 | §7.3 |
-| `stallDelta` | 0.3 | — | §7.3 |
-| `nudgeMax` | 3.0 | — | §7.3 |
-| `repeatWindowMin` | 120 | — | §7.3 |
-| `driftRateMax` / `driftRateMin` | 0.3 / 0.1 | °C/h | §7.4 |
-| `driftCapMax` / `driftCapMin` | 1.5 / 0.5 | °C | §7.4 |
-| `driftPauseMin` | 120 | — | §7.5 |
-| `driftQuantile` | 0.3 | 0.05–0.5 | §7.4 |
-| `preconditionMaxMin` | 120 | 0–360 | §7.11 |
-| `vacancyRate` | 0.5 | °C/h | §7.6 |
-| `vacancyAccelPerHour` | 0.5 | — | §7.6 |
-| `vacancyRateMax` | 1.0 | °C/h | §7.6 |
-| `responseRateDefault` | 0.05 | °C/min | §7.7 |
-| `costWeight` | 0.5 | 0–2 | §7.4, §7.6 |
-| `convergedSigma` / `convergedVotes` | 0.6 / 20 | — | §5.2 |
-| `structureHour` | 3 | 0–23 | §8 |
+| `qSafe` | 0.2 | 0.05–0.5 | §7.1 (the edge at risk 0) |
+| `qRisk` | 0.35 | qSafe–0.5 | §7.1 (the edge at risk 1; 0.5 = the person's median limit) |
+| `riskRate` | 0.25 | /h | §7.3 (0 → 1 in 4 quiet hours) |
+| `riskPauseMin` | 120 | — | §7.3 |
+| `stepInit` / `stepMin` / `stepMax` / `stepGrow` | 1.0 / 0.3 / 2.0 / 1.25 | °C | §7.2 |
+| `cooldownMin` | 30 | — | §7.2 |
+| `stallDelta` | 0.3 | °C | §7.2 |
+| `nudgeMax` | 3.0 | °C | §7.2 |
+| `repeatWindowMin` | 120 | — | §7.2 |
+| `natureMargin` | 1.0 | 0.3–3 | §7.4 |
+| `preconditionMaxMin` | 120 | — | §7.5 |
+| `responseRateDefault` | 0.05 | °C/min | §7.5 |
+| `costWeight` | 0.5 | 0–2 | §7.3, §8.4 |
+| `convergedSigma` | 0.6 | — | §5.2 |
+| `convergedVotes` | 20 | — | §5.2 |
+| `structureHour` | 3 | 0–23 | §5.3 |
 | `splitMinVotes` | 5 | — | §8.2 |
-| `splitMinGap` | 1.0 | — | §8.2 |
-| `mergeMedianDelta` / `mergeSigma` | 0.3 / 0.6 | — | §8.3 |
-| `blockMinMin` | 120 | — | §8 |
-| `blocksMax` | 8 | — | §8 |
+| `splitMinGap` | 1.0 | °C | §8.2 |
+| `mergeMedianDelta` | 0.3 | °C | §8.3 |
+| `mergeSigma` | 0.6 | — | §8.3 |
+| `blockMinMin` | 120 | — | §8.2–8.4 |
+| `blocksMax` | 8 | — | §8.2 |
 | `trialProb` | 0.2 | 0–1 | §8.4 |
 | `trialShiftsMin` | [15, 30] | — | §8.4 |
 | `trialRevertWindowMin` / `trialRevertDays` | 60 / 3 | — | §8.4 |
 | `structureVotesFull` | 100 | — | §8.4 |
 | `voteHistoryDays` | 30 | — | §8.2 |
 | `snapshotEveryMin` | 60 | — | §9 |
-| `protectHysteresis` | 1.0 | 0.2–3 | §7.12 |
-
-### 3.5 Sleep windows
-
-`sleep`: an optional list of up to 4 `{ start: "HH:MM", end: "HH:MM" }` local
-times of day when the zone's present users are asleep (a window MAY wrap
-midnight; `start = end` is ignored). Sleeping users cannot vote, so while the
-current local minute is inside a window **and** at least one user is present:
-
-- occupied drift (§7.4) is **frozen in place**: `drift.value` neither grows nor
-  resets on its own (the usual resets — a vote, a change of the present set, a
-  block change — still apply);
-- no silence observations (§6.3);
-- no trial shift (§8.4) moves a boundary that starts or ends inside a window;
-- the output carries the reason `sleep`.
-
-Votes, nudges, holds, vacancy drift (nobody present = nobody asleep), recovery
-and protection are unaffected. Like the seed, the windows are the host's
-knowledge about its occupants; the engine only applies them.
+| `protectHysteresis` | 1.0 | 0.2–3 | §7.6 |
 
 ## 4. Events
 
@@ -167,12 +184,12 @@ rejected with a `{type:"rejected", reason:"type"}` record.
 | type | fields | meaning |
 |---|---|---|
 | `vote` | `user`, `dir: "hot"\|"cold"`, `src?` | a user says they are too hot / too cold. `src` is provenance for records only; the engine MUST NOT branch on it |
-| `presence` | `users: uid[]`, `expectedArrival?` (RFC 3339), `expectedUsers?: uid[]` | the complete set of present users (replaces the previous set), and optionally when the host expects the next arrival and who (§7.7, §7.11). The engine never predicts arrivals itself |
+| `presence` | `users: uid[]`, `expectedArrival?` (RFC 3339), `expectedUsers?: uid[]` | the complete set of present users (replaces the previous set), and optionally when the host expects the next arrival and who (§7.5). The engine never predicts arrivals itself |
 | `reading` | `tin`, `rh?`, `equip?: "heat"\|"cool"\|"fan"\|"idle"\|"off"`, `applied?: {heat?, cool?, mode?}` | indoor conditions and what the device is actually set to |
-| `weather` | `out`, `high?`, `low?` | outdoor temperature now (and today's forecast extremes) |
+| `weather` | `out`, `high?`, `low?` | outdoor temperature now (and today's forecast extremes, recorded only). Hosts SHOULD send it at least every 10 min: release (§7.4) follows the last value and ignores one older than 3 h |
 | `cost` | `level` ∈ [0,1] | relative energy price signal (0 = cheapest) |
-| `manual` | `applied: {heat?, cool?, mode?}`, `until?` (RFC 3339) | someone changed the device directly; a hold until `until` (host-chosen timeout) or else the next block (§7.9) |
-| `freeze` | `on: boolean` | "we've got this": stop all learning and entropy (§7.8) |
+| `manual` | `applied: {heat?, cool?, mode?}` | someone changed the device directly. Learned as a weak vote (§7.2); the **host** owns any hold and its timeout and simply does not actuate the engine's output while it holds |
+| `freeze` | `on: boolean` | "we've got this": stop all learning and risk (§7.7) |
 | `tick` | — | periodic heartbeat; hosts SHOULD send one every 1–5 minutes |
 | `restore` | `snapshot` | replace state with a snapshot (§9) |
 
@@ -184,14 +201,13 @@ rejected with a `{type:"rejected", reason:"type"}` record.
 - `models[uid][blockId]` — comfort range model per user and block (§6).
 - `presence` — `{known, users, since, expectedArrival, expectedUsers}`; `since` is when the set of present users last changed.
 - `reading` — last `{tin, rh, equip, applied, at}`.
-- `weather` — last `{out, high, low, at}`, plus running-mean `trm` and the day being tracked `{date, sum, n, hl}` (§6.5).
-- `nudge` — `{delta, blockId}` (§7.3).
-- `drift` — occupied drift `{value, pausedUntil}` (§7.4).
-- `vacancy` — `{since, value}` (§7.6).
-- `hold` — `{until, applied}` or null (§7.9).
+- `weather` — last `{out, high, low, at}`.
+- `risk` — per side `{heat, cool}` ∈ [0,1]; `paused` — per side, until when a complaint holds (§7.3).
+- `nudge` — per side inward offsets `{heat, cool}` ≥ 0 and `blockId` (§7.2).
+- `released` — per side booleans `{heat, cool}` (§7.4).
 - `frozen` — boolean.
-- `protecting` — `"max"`, `"min"` or null (§7.12).
-- `responseRate` — learned °C/min (§7.7).
+- `protecting` — `"max"`, `"min"` or null (§7.6).
+- `responseRate` — learned °C/min (§7.5).
 - `structure` — `{rng, lastRunDate, trials[], votes[]}` (§8).
 - `cost` — last level (default 0).
 - `lastEventAt`.
@@ -201,13 +217,11 @@ rejected with a `{type:"rejected", reason:"type"}` record.
 The **state** reported in the output is derived, in this priority order:
 
 1. `FROZEN` — `frozen` is true.
-2. `HOLD` — `hold` is active (`now < hold.until`).
-3. `RECOVERING` — presence is known, no users present, recovery active (§7.7).
-4. `VACANT` — presence is known and no users are present.
-5. `SEEDED` — no user present has any vote in the current block.
-6. `CONVERGED` — every present user's current-block model has
+2. `VACANT` — presence is known and no users are present.
+3. `SEEDED` — no user present has any vote in the current block.
+4. `CONVERGED` — every present user's current-block model has
    `sigma < convergedSigma` (both edges) and `n ≥ convergedVotes`.
-7. `LEARNING` — otherwise.
+5. `LEARNING` — otherwise.
 
 ### 5.3 Processing order for one `step`
 
@@ -217,24 +231,19 @@ The **state** reported in the output is derived, in this priority order:
    after `structureHour` on a local date later than `structure.lastRunDate`.
    The very first event an engine processes only sets `lastRunDate` to its
    local date (no maintenance), so day one always starts from the seed.
-3. If the current block changed since the previous event: clear `nudge`,
-   expire a `hold` that has no host-given `until` (§7.9), reset occupied
-   `drift.value` to 0.
+3. If the current block changed since the previous event: clear `nudge`.
 4. Apply the event (§6–§7, per type).
-5. Advance time-based processes for the elapsed time since `lastEventAt`:
-   silence observations (§6.3), occupied drift (§7.4), vacancy drift (§7.6),
-   recovery (§7.7). Elapsed time is `min(now − lastEventAt, 60 min)` so a
-   long gap cannot cause a jump.
-6. Compute the output (§7.10).
+5. **Learn** for the elapsed time since `lastEventAt`, `min(now − lastEventAt, 60 min)`:
+   silence observations (§6.3), risk (§7.3).
+6. **Band** and **act**: compute the output (§7.8).
 7. Emit effects (§10). Set `lastEventAt = now`.
 
 ### 5.4 Applied values
 
 `reading.applied` and `manual.applied` report what the device is *actually* set
 to after the host applied its own policy. The engine MUST use `reading.tin`
-(not its own output) as the temperature votes are judged against, and MUST
-treat `manual` as a hold (§7.9). The engine's next output is computed from its
-own state, never by echoing `applied` back.
+(not its own output) as the temperature votes are judged against. The engine's
+next output is computed from its own state, never by echoing `applied` back.
 
 ## 6. Comfort model
 
@@ -242,33 +251,25 @@ own state, never by echoing `applied` back.
 
 A user's comfort in a block is a **range** `[T_lo, T_hi]`: the coolest and the
 warmest indoor temperature they accept. The engine learns each edge separately.
-For each `(uid, blockId, edge)` with `edge ∈ {lower, upper}` it keeps a discrete
-posterior over `c`, the edge's value at the reference running-mean outdoor
-temperature, on the grid `c_i = gridMin + i·gridStep`, `i = 0..N−1`,
+For each `(uid, blockId, side)` it keeps a discrete posterior over the edge's
+value `c` on the grid `c_i = gridMin + i·gridStep`, `i = 0..N−1`,
 `N = round((gridMax − gridMin)/gridStep) + 1`.
 
-The edge's value **now** is
-
-```
-T(c) = c + k · (trm − adaptiveRef)        with k = adaptiveSlope
-```
-
 Priors are Gaussians on the grid (normalised to sum 1) whose conservative
-quantile reproduces the seed block exactly (§7.2):
+quantile reproduces the seed block exactly (§7.1):
 
 ```
-upper:  μU = b.cool − priorSigma · Φ⁻¹(qLow)      # e.g. cool + 0.8416·σ for qLow = 0.2
-lower:  μL = b.heat − priorSigma · Φ⁻¹(qHigh)     # e.g. heat − 0.8416·σ for qHigh = 0.8
-w_i ∝ exp(−½ ((c_i − μ)/priorSigma)²)
+μ_side = b[side] − σ · priorSigma · Φ⁻¹(qSafe)      # cool: cool + 0.8416·s ; heat: heat − 0.8416·s   (qSafe 0.2)
+w_i ∝ exp(−½ ((c_i − μ_side)/priorSigma)²)
 ```
 
-`b` is the block the model belongs to (§8.1). `Φ⁻¹(0.2) = −0.8416212335729143`,
-`Φ⁻¹(0.8) = +0.8416212335729143`; for other `qLow`/`qHigh` use any inverse-normal
+`b` is the block the model belongs to (§8.1) and `σ` the side's sign (§1.1).
+`Φ⁻¹(0.2) = −0.8416212335729143`; for another `qSafe` use any inverse-normal
 accurate to 1e−9.
 
 A user's block model is `{ lower, upper, n, step, lastVote }`, created lazily
 from the priors the first time it is needed. `n` counts vote updates
-(manual updates add `manualWeight`), `step` is the nudge step (§7.3),
+(manual updates add `manualWeight`), `step` is the nudge step (§7.2),
 `lastVote` is `{at, dir, tin}` or null.
 
 Statistics of one edge posterior (weights `w` on grid `c`):
@@ -282,16 +283,14 @@ A block model's `sigma` is the larger of its edges' sigmas and its
 
 ### 6.2 Likelihoods
 
-With `tin` the current indoor temperature, `T_i = T(c_i)`, and `Φ` the standard
-normal CDF (Appendix A):
+With `tin` the current indoor temperature, `σ` the sign of the side being
+updated, and `Φ` the standard normal CDF (Appendix A):
 
-| observation | edge updated | likelihood `L_i` |
+| observation | side updated | likelihood `L_i` |
 |---|---|---|
-| vote `hot` (`tin` is above the warmest acceptable) | upper | `Φ((tin − T_i)/voteNoise)` |
-| vote `cold` (`tin` is below the coolest acceptable) | lower | `Φ((T_i − tin)/voteNoise)` |
-| silence (`tin` is inside the range) | upper | `(1 − silenceWeight) + silenceWeight · Φ((T_i − tin)/silenceSigma)` |
-| | lower | `(1 − silenceWeight) + silenceWeight · Φ((tin − T_i)/silenceSigma)` |
-| manual (direction only, §7.9) | as the vote | the vote likelihood raised to the power `manualWeight` |
+| vote (`hot` → `cool` side, `cold` → `heat` side): the room is past that edge | the voted side | `Φ(σ·(tin − c_i)/voteNoise)` |
+| silence: the room is inside the range | both sides | `(1 − silenceWeight) + silenceWeight · Φ(σ·(c_i − tin)/silenceSigma)` |
+| manual (§7.2) | as the vote | the vote likelihood raised to the power `manualWeight` |
 
 Update: `w_i ← w_i · max(L_i, 1e−9)`, then normalise.
 
@@ -303,282 +302,176 @@ and no nudge (`effects.feedback = "noted.no_reading"`).
 
 ### 6.3 Silence
 
-While a user is present, the zone is not `FROZEN` or `HOLD`, and it is not a
-sleep window (§3.5), every
-`silenceEveryMin` minutes of continuous presence without a vote from that user,
-the engine applies one silence observation to both edges of that user's
-current-block model, using the latest `tin`. Implementations track
+While a user is present, the zone is not `FROZEN`, and it is not a sleep window
+(§3.4), every `silenceEveryMin` minutes of continuous presence without a vote
+from that user, the engine applies one silence observation to both sides of
+that user's current-block model, using the latest `tin`. Implementations track
 `lastSilenceAt[uid]`, set to `now` when the user votes and when the user
 becomes present.
 
 ### 6.4 Forgetting
 
-After every vote or manual update, on the updated edge:
+After every vote or manual update, on the updated side:
 `w_i ← (1 − forget)·w_i + forget·prior_i`.
 
-### 6.5 Running-mean outdoor temperature (trm)
+## 7. Control (the loop)
 
-A day's mean outdoor temperature `d` is `(high + low)/2` from the latest
-`weather` event of that local date that carried both `high` and `low`; if none
-did, it is the mean of that date's `out` samples. (Sampling only part of a day —
-e.g. an engine started mid-afternoon — badly overestimates the mean; the
-forecast extremes don't.)
+All of §7 is written for one side; it runs for both (§1.1). `tin` is the last
+reading, `out` the last outdoor temperature if received within the last 3 h.
 
-When the local date of a `weather` event differs from the date being tracked,
-the finished day's `d` updates `trm ← (1 − trmAlpha)·d + trmAlpha·trm` (if
-`trm` is unset: `trm ← d`). Until the first day completes, `trm` is today's `d`
-so far. If no weather has ever been received, `trm = adaptiveRef`.
+### 7.1 Band
 
-## 7. Control
-
-### 7.1 Present users and the current block
-
-`present` = `presence.users`. The current block is the block containing the
-local minute of `now` (§8.1). Models are looked up for `(uid, currentBlock.id)`.
-
-### 7.2 Aggregate band
-
-For each present user `u` with block model `M_u`, and the block's priors
-`PU`, `PL`:
+For each side, each present user `u` with block model `M_u` contributes the
+edge it accepts at the current risk `r = risk[side]`:
 
 ```
-dU_u = quantile(M_u.upper, qLow)  − quantile(PU, qLow)     # how far u's warm limit moved
-dL_u = quantile(M_u.lower, qHigh) − quantile(PL, qHigh)    # how far u's cool limit moved
-coolShift = min_u dU_u          # nobody present should be too hot
-heatShift = max_u dL_u          # nobody present should be too cold
-leashCool = leashBase + leashGain · min_u confidence(M_u.upper)   # each side is leashed by
-leashHeat = leashBase + leashGain · min_u confidence(M_u.lower)   # confidence in the limit it follows
-coolShift = clamp(coolShift, −leashCool, +leashCool)
-heatShift = clamp(heatShift, −leashHeat, +leashHeat)
+q_u(x)      = quantile(M_u[side], 0.5 − σ·(0.5 − x))       # cool: x ; heat: 1 − x
+edge_u      = q_u(qSafe) + r · (q_u(qRisk) − q_u(qSafe))    # risk 0: the safe edge; risk 1: the risky one
+edge[side]  = σ · min_u ( σ · edge_u )                      # the most sensitive present user wins
 ```
 
-At cold start both shifts are exactly 0, so the output equals the seed block
-(plus the adaptive term, §7.2a). With no users present the shifts keep the
-values from the last time users were present in this block (0 if never).
+So the band is the intersection of everyone's accepted range. Risk widens it
+symmetrically; that is equivalent to widening only toward the outdoor air,
+because the side the outdoor air pushes the room away from is released
+anyway (§7.4) and its edge has no effect.
 
-If `(b.cool + coolShift) − (b.heat + heatShift) < capabilities.minGap` the
-present users' ranges conflict; the engine records a `conflict` (§10) and the
-gap rule in §7.10 resolves it in favour of the season.
+With nobody present the band is `setback`. (A side that has no present user
+contributing, e.g. `FROZEN` with nobody home, uses `setback` too.)
 
-### 7.2a Adaptive term
+### 7.2 Nudge (a vote is felt)
 
-`A = adaptiveSlope · (clamp(trm, adaptiveTrmMin, adaptiveTrmMax) − adaptiveRef)`
-(the clamp is the adaptive model's range of validity). The seed schedule is taken to be
-comfortable at `trm = adaptiveRef`; on warmer (cooler) running-mean outdoor
-temperatures the whole band moves up (down) by `A`, as in the ASHRAE 55 adaptive
-comfort model. The default slope (0.10) is the value reported for mechanically
-conditioned buildings, well below the 0.31 of naturally ventilated ones.
-`A` is not subject to the leash.
-
-### 7.3 Nudge (vote fast path)
-
-On a `vote` from `u` (a reading must be available, §6.2), after the model
-update (skipped when `FROZEN`, but the nudge still applies):
-
-1. If `hold` is active: no nudge; feedback `noted.hold`.
-2. Let `last = M_u.lastVote`. If `last` exists and
-   `now − last.at < cooldownMin` and the room is **not stalled**, no nudge;
-   feedback `noted.cooldown`. The room is *stalled* if
-   `now − last.at ≥ responseMin` and `|tin − last.tin| < stallDelta`.
-3. Step size: if `last` exists and `last.dir ≠ dir`:
-   `step ← max(stepMin, step/2)`; else if `last` exists and `last.dir = dir`
-   and `now − last.at < repeatWindowMin`: `step ← min(stepMax, step·stepGrow)`.
-   (A new model starts at `stepInit`.)
-4. Make the vote **felt**: after the model update, the voted edge of the
-   output must end at least one step past the room temperature. With `A`
-   (§7.2a) and the post-update shifts (§7.2):
-   ```
-   hot:   delta = min(0, (tin − step) − (b.cool + coolShift + A + nudge.delta))
-   cold:  delta = max(0, (tin + step) − (b.heat + heatShift + A + nudge.delta))
-   nudge.delta ← clamp(nudge.delta + delta, −nudgeMax, +nudgeMax) ;  nudge.blockId ← currentBlock.id
-   ```
-   Whatever the learned shift already moved counts toward it, so learning and
-   the nudge never add up to more than "one step past the room".
-5. `M_u.lastVote ← {at: now, dir, tin}` (also when no nudge was applied).
-
-The nudge persists until the block changes (§5.3 step 3).
-
-### 7.4 Occupied drift (entropy)
-
-While users are present, the state is `SEEDED`, `LEARNING` or `CONVERGED`,
-`now ≥ drift.pausedUntil`, and it is not a sleep window (§3.5; there the value
-is frozen in place):
+A vote on a side is a step search (Thermovote-style): after the model update
+(§6.2) the voted edge MUST end at least one `step` **inward of the room**, so
+the device responds right away:
 
 ```
-conf  = min_u confidence(M_u)        # block-model confidence, §6.1
-rate  = (driftRateMax − (driftRateMax − driftRateMin)·conf) · (1 + costWeight·cost)   # °C/h
-cap   = driftCapMax − (driftCapMax − driftCapMin)·conf
-drift.value ← min(cap, drift.value + rate · blockElapsedHours)
+target        = tin − σ · M_u.step
+nudge[side]   = clamp( max( nudge[side], σ·(edge[side] − target) ), 0, nudgeMax )     # inward offset
 ```
 
-`blockElapsedHours` is the elapsed time (§5.3) limited to the time since the
-current block started and the time since the set of present users last
-changed (`presence.since`), so neither a block nor a new set of occupants
-inherits drift time from before. Occupied drift resets to 0 whenever the set of present users changes
-(including the first `presence` event).
+where `edge[side]` is the band edge after learning. `nudge` is cleared when the
+block changes. The user's `step` halves on a direction reversal (floor
+`stepMin`) and grows by `stepGrow` on a repeated same-direction vote within
+`repeatWindowMin` (cap `stepMax`). A vote within `cooldownMin` of the user's
+previous vote nudges only if the room is **stalled**: `responseMin` has passed
+and `|tin − lastVote.tin| < stallDelta`; otherwise `feedback = noted.cooldown`.
+Feedback for a felt vote is `nudge.cooler` (`cool` side) / `nudge.warmer`.
 
-Drift widens the band toward idle: it raises the cooling setpoint and lowers
-the heating setpoint (§7.10) — but on each side never past the most sensitive
-present user's `driftQuantile` limit (default 0.3: a point the user is
-learned to be ~70% likely to still accept):
+`manual{applied}`: for each side whose `applied` value moved inward of the
+engine's last output, treat as a vote on that side from every present user
+with weight `manualWeight` (§6.2), with `target = applied[side]` instead of
+`tin − σ·step`; a side that moved outward or did not move is ignored.
 
-```
-coolCeil  = min_u (quantile(M_u.upper, driftQuantile)     − quantile(PU, qLow))   # as a shift from the seed
-heatFloor = max_u (quantile(M_u.lower, 1 − driftQuantile) − quantile(PL, qHigh))
-capCool   = max(0, coolCeil − coolShift)                      # coolShift/heatShift after the leash (§7.2)
-capHeat   = max(0, heatShift − heatFloor)
-driftCool = min(drift.value, capCool) ;  driftHeat = min(drift.value, capHeat)
-```
+### 7.3 Risk (learn)
 
-So exploration may go from the conservative quantile toward the user's learned
-limit, and no further; right after a complaint that is below the temperature
-complained about. (Exploring right up to the median produces complaints by
-design once the model is accurate; 0.3 trades a little saving for fewer of them.)
-
-### 7.5 Complaint response
-
-On any `vote`: `drift.value ← 0`, `drift.pausedUntil ← now + driftPauseMin`,
-and nothing else: caution after a complaint comes from the reset, the pause,
-and the drift ceiling (§7.4). (The posterior itself is not flattened — doing so
-after every vote prevents it from ever converging.)
-
-### 7.6 Vacancy drift
-
-When `present` is empty: if `vacancy.since` is unset, set it to `now`.
-While not recovering (§7.7) and not frozen:
+`risk[side] ∈ [0,1]` is how far into the uncertain part of people's accepted
+range the band extends. Per elapsed hour `dtH` (§5.3 step 5), while users are
+present, awake (§3.4), the zone is not `FROZEN` and the side is not paused
+(`paused[side]` is null or ≤ `now`):
 
 ```
-h     = (now − vacancy.since) in hours
-rate  = min(vacancyRateMax, vacancyRate · (1 + vacancyAccelPerHour · h)) · (1 + costWeight·cost)
-vacancy.value ← vacancy.value + rate · min(elapsedHours, h)
+risk[side] ← min(1, risk[side] + riskRate · (1 + costWeight · cost) · dtH)
 ```
 
-When users become present: `vacancy ← {since: null, value: 0}`.
+A vote on a side is a **complaint**: `risk[side] ← 0` and
+`paused[side] ← now + riskPauseMin` (the other side is untouched). While paused
+the side neither widens nor is released (§7.4). Risk persists across blocks and
+vacancy; it is frozen in place while asleep or `FROZEN`.
 
-### 7.7 Recovery and response rate
+### 7.4 Nature (release)
 
-**Response rate.** On each `reading` where the previous reading is 1–30
-minutes older, `equip` is `heat` or `cool`, and the temperature moved in the
-equipment's direction: `r = |Δtin| / Δminutes`;
-`responseRate ← 0.8·responseRate + 0.2·r` (initial `responseRateDefault`).
-
-**Recovery.** While vacant with `expectedArrival` set and not yet recovering:
-`need = vacancy.value / responseRate` minutes. If `expectedArrival − now ≤ need`
-the zone enters `RECOVERING`: `vacancy.value ← 0` and vacancy drift stops.
-Recovering ends when presence becomes non-empty, when `expectedArrival`
-changes (a `presence` event repeating the same empty set and the same
-`expectedArrival` does not end it), or 60 minutes after `expectedArrival`
-passes with nobody present (a no-show:
-vacancy drift resumes from 0 with `vacancy.since ← now`). Without
-`expectedArrival`, recovery happens when presence becomes non-empty.
-
-**Unknown presence.** Until the first `presence` event, presence is unknown:
-the zone is `SEEDED`, and neither occupied nor vacancy drift runs.
-
-### 7.11 Pre-conditioning
-
-While users are present and not `HOLD`, the output tightens early so the room
-gets there in time. For a future band `(nCool, nHeat)` starting in `ahead`
-minutes:
+The outdoor air pushes the room along the vector `out − tin`. A side the room
+is being pushed **away from** has nothing to do: it is released to `setback`.
+With hysteresis so the thermostat is not rewritten around the crossing:
 
 ```
-need = max(0, cool − nCool, nHeat − heat)         # °C the band must tighten
-if need > 0 and ahead ≤ min(preconditionMaxMin, need / responseRate):
-    cool = min(cool, nCool) ; heat = max(heat, nHeat) ; reason "precondition"
+released[side] ← true   when  σ·(out − tin) ≤ −natureMargin
+released[side] ← false  when  σ·(out − tin) ≥ 0, or out is unknown (older than 3 h), or the side is paused (§7.3)
+if released[side]: setpoint[side] = setback[side]
 ```
 
-Two future bands are considered, in this order (both may apply):
-1. the next block — its seed plus `shifts` for the **current** present users,
-   plus `A`; `ahead` = minutes to the next block boundary;
-2. expected arrivals — when `presence.expectedArrival` is in the future and
-   `expectedUsers` contains users not present: the current block's band for
-   present ∪ expected users (plus `A` and the nudge); `ahead` = minutes to
-   `expectedArrival`.
+A complaint on a side un-releases it for `riskPauseMin` — the person is
+uncomfortable now and the outdoor air is too slow. Protection (§7.6) also overrides release.
+Cooling is released only when the outdoor air is cooler than the room, so on a
+hot day cooling is always available; the same for heating on a cold one.
 
-Only tightening is applied early; loosening waits for the boundary.
-While vacant and `RECOVERING` (§7.7), if `expectedUsers` is given the recovery
-target is the current block's band for those users.
+### 7.5 Pre-conditioning
 
-### 7.12 Protection
-
-Applied last, after holds (§7.9) and whatever the state is (including `FROZEN`):
+Before a tighter band arrives — the next block, or an `expectedArrival` with
+`expectedUsers` not yet present — the engine starts conditioning early enough
+to be there on time. With `rate = max(responseRate, 1e−6)` °C/min and the
+coming band `next` (computed as §7.1 with the next block's models, or with the
+expected users added, at the current risk):
 
 ```
-if protect.max set and cool > protect.max:  cool = protect.max ; if cool − heat < minGap: heat = cool − minGap
-if protect.min set and heat < protect.min:  heat = protect.min ; if cool − heat < minGap: cool = heat + minGap
-(each rounded to setpointStep toward the inside of the limit: down for max, up for min,
-so the room settles inside the hysteresis band and protection can release)
+need     = σ · (edge[side] − next[side])             # how far this side must move inward
+if need > 0 and minutesAhead ≤ min(preconditionMaxMin, need / rate):  edge[side] = next[side]
 ```
 
-The engine also tracks whether the **room** is beyond a limit, with hysteresis so
-a device does not short-cycle at the threshold:
+`responseRate` is learned from readings: when `equip` is `heat` or `cool` and
+the room moved in that direction over 1–30 min,
+`responseRate ← 0.8·responseRate + 0.2·|Δtin|/Δmin`.
+
+### 7.6 Protection
+
+Applied last and whatever the state is, including `FROZEN`:
 
 ```
-protecting = "max"  when tin ≥ protect.max ; stays until tin ≤ protect.max − protectHysteresis
-protecting = "min"  when tin ≤ protect.min ; stays until tin ≥ protect.min + protectHysteresis
+setpoint[side] = σ · min( σ·setpoint[side], σ·limit[side] )        # cool ≤ protect.max ; heat ≥ protect.min
 ```
 
-`output.protect` is `protecting` (`"max"`, `"min"` or `null`), and the reason
-`protect` is added while clamping or protecting. For a device without `auto`,
-`mode` becomes `cool` (`heat`) while protecting the max (min).
+The engine also tracks whether the **room** is beyond a limit, with hysteresis:
 
-**While `output.protect` is not null, hosts MUST actuate toward the output even
-when their own policy would otherwise leave the device off** (the zone is empty,
-quiet hours, an automation switch is off, a manual hold). This is the one place
-the engine's output overrides site policy.
+```
+protecting = side   when  σ·(tin − limit[side]) ≥ 0 ;  stays until  σ·(tin − limit[side]) ≤ −protectHysteresis
+```
 
-### 7.8 Freeze
+`output.protect` is `"max"` (cool side), `"min"` (heat side) or `null`, and the
+reason `protect` is added while clamping or protecting. **While
+`output.protect` is not null, hosts MUST actuate toward the output even when
+their own policy would otherwise leave the device off** (the zone is empty,
+quiet hours, an automation switch is off, a manual hold). This is the one
+place the engine's output overrides site policy.
+
+### 7.7 Freeze
 
 `freeze{on:true}` sets `frozen`. While frozen: no posterior updates (votes,
-silence, manual), no forgetting, no occupied or vacancy drift (both reset to
-0), no structure changes (§8). Votes still nudge (§7.3) and are recorded.
-`freeze{on:false}` clears it.
+silence, manual), no forgetting, risk frozen in place, no structure changes
+(§8). Votes still nudge (§7.2) and are recorded. `freeze{on:false}` clears it.
 
-### 7.9 Hold
-
-`manual{applied, until?}`: `hold ← {until, applied, host: true}` when the
-host gave an `until` later than `now` (the host owns the timeout; such a hold
-survives block changes), else `hold ← {until: start of the next block, applied}`; for each
-present user apply a manual (direction-only) update: if `applied.cool` is lower
-than the engine's last output cool, or `applied.heat` is higher than the last
-output heat, treat as `hot`-for-cool / `cold`-for-heat respectively (lowering
-cool ⇒ `hot`, raising heat ⇒ `cold`, raising cool ⇒ `cold`, lowering heat ⇒ `hot`);
-if both moved in conflicting directions, no update. While the hold is active (whether the state is reported as `HOLD` or `FROZEN`), the output
-equals `hold.applied` (fields not given fall back to the computed value); if
-that leaves `cool − heat < minGap`, the side *not* given in `hold.applied` moves
-to restore the gap (within its capability limits, rounded to `setpointStep`).
-
-### 7.10 Output
+### 7.8 Output (band → act)
 
 ```
-b      = current block
-base   = { heat: b.heat + heatShift + A + nudge.delta,
-           cool: b.cool + coolShift + A + nudge.delta }
-if present non-empty:  heat −= driftHeat ; cool += driftCool       # §7.4
-                       apply pre-conditioning                       # §7.11
-else:                  heat = max(setback.heat, heat − vacancy.value)
-                       cool = min(setback.cool, cool + vacancy.value)
-clamp heat to capabilities.heat, cool to capabilities.cool
-if cool − heat < minGap:  cooling season (trm ≥ coolingSeasonTrm): heat = cool − minGap
-                          heating season:                       cool = heat + minGap
-                          then re-clamp; if a clamp bites, move the other side
-round both to setpointStep: floor(x/step + 0.5 + 1e−9)·step
-mode_intent = "auto" if supported,
-              else (trm ≥ coolingSeasonTrm ? "cool" : "heat") if supported, else first supported mode
-if HOLD: replace with hold.applied fields
+for each side:
+  edge      = §7.1 band edge (setback if nobody present)
+  edge      = edge − σ·nudge[side]                     # §7.2
+  edge      = pre-conditioned                          # §7.5
+  setpoint  = released ? setback[side] : edge          # §7.4
+  setpoint  = clamped to capabilities[side], rounded inward to setpointStep (§2)
+if cool − heat < minGap: keep the side with an active nudge if exactly one has it, else the side the
+                         room is pushed toward (`cool` if out > tin, else `heat`); the other side moves
+                         outward to restore the gap; re-clamp
+for each side: setpoint = protection clamp (§7.6), rounded inward; if that breaks the gap the other side gives way
+mode = "auto" if supported;
+       else the side the room is outside of (tin past that setpoint, not released) if supported;
+       else the side opposing the outdoor air (out > tin → "cool", else "heat") if supported;
+       else the first supported mode
 ```
 
 Output object:
 
 ```
-{ heat, cool, mode, state, block: b.id,
-  reasons: [string], confidence, coolShift, heatShift, adaptive: A, nudge, drift, vacancy,
-  protect: "max" | "min" | null }
+{ heat, cool, mode, state, block: b.id, blockEnd (RFC 3339: start of the next block),
+  band: { heat, cool },                      # before release and protection
+  released: { heat, cool }, risk: { heat, cool }, nudge: { heat, cool },
+  reasons: [string], confidence, protect }
 ```
 
 `reasons` is a list of stable codes describing what contributed, in this
-order when applicable: `seed`, `adaptive`, `learned`, `conflict`, `nudge`, `drift`,
-`vacancy`, `precondition`, `recovering`, `hold`, `frozen`, `sleep`, `protect`, `limit`, `gap`.
+order: `seed` (state SEEDED), `learned` (LEARNING or CONVERGED), `conflict`,
+`nudge`, `risk`, `vacant`, `released`, `precondition`, `frozen`, `sleep`,
+`protect`, `limit` (a capability clamp bit), `gap`. `confidence` is the
+smallest present user's block-model confidence (0 if nobody is present).
 
 ## 8. Block structure
 
@@ -622,10 +515,11 @@ After merging: `structConf = min(1, votesInHistory / structureVotesFull)`;
 boundary index `j = floor(rng() · blocks.length)` (the start of block `j`,
 skipped if there is one block) and a shift
 `Δ = trialShiftsMin[floor(rng()·len)]` minutes in the direction that lengthens
-the neighbour with the **lower energy use** — the block with the higher
-`cool` in the cooling season (trm ≥ coolingSeasonTrm), the lower `heat`
-otherwise; ties: later. The shift MUST keep every block ≥ `blockMinMin`, and is skipped if the
-boundary's old or new time is inside a sleep window (§3.5).
+the neighbour with the **looser edge on the side the outdoor air pushes the
+room toward** — with `σ` the sign of that side (`out > tin` → `cool`, else
+`heat`; `heat` if `out` or `tin` is unknown), the block with the larger
+`σ·b[side]`; ties: later. The shift MUST keep every block ≥ `blockMinMin`, and is skipped if the
+boundary's old or new time is inside a sleep window (§3.4).
 Store `{at, blockId, from, to}` in `structure.trials`.
 
 A trial is **reverted** (start restored) if any vote arrives within
@@ -661,12 +555,18 @@ If the configured seed differs from the one the blocks were built from
 (compare the list of `start/heat/cool`), the engine rebuilds `blocks` from the
 new seed and discards models (records `{type:"blocks", action:"reseed"}`).
 
+
 ## 9. Snapshot
 
 The snapshot is the complete state as JSON
 ([`schema/snapshot.schema.json`](schema/snapshot.schema.json)) with
-`snapshotVersion: 1`. `restore{snapshot}` MUST accept any version ≤ the
+`snapshotVersion: 2`. `restore{snapshot}` MUST accept any version ≤ the
 implementation's and migrate it; unknown higher versions MUST be rejected.
+Migrating a version-1 snapshot keeps `models`, `blocks`, `structure`,
+`presence`, `reading`, `weather`, `frozen`, `protecting`, `responseRate`,
+`cost` and the bookkeeping fields, and starts `risk`, `nudge` and `released`
+at zero / false; `drift`, `vacancy`, `hold`, `trm`, `day`, `lastShift` and
+`conflictDay` are dropped.
 The engine emits `effects.snapshot` after any event that changed models,
 blocks or `frozen`, or that produced a `decision` record (so a restored
 snapshot's `lastOutput` is the output actually published), and otherwise at
@@ -684,14 +584,14 @@ Record types (all include `at` = `now` and `zone` = config `id`):
 
 | type | when | fields |
 |---|---|---|
-| `vote` | every accepted vote | `user, dir, src, block, tin, rh, out, trm, present, applied, step, nudge, state, updated (bool)` |
-| `decision` | output `heat`, `cool`, `mode` or `state` differs from the previous output | the full output |
-| `conflict` | §7.2 ranges conflict (at most once per block per day) | `block, present, coolShift, heatShift` |
+| `vote` | every accepted vote | `user, dir, src, block, tin, rh, out, present, applied, step, nudge, state, updated (bool)` |
+| `decision` | output `heat`, `cool`, `mode`, `state`, `protect` or a `released` flag differs from the previous output | the full output |
+| `conflict` | §7.8 the band is narrower than `minGap` while occupied (at most once per block per day) | `block, present, band` |
 | `blocks` | split / merge / trial / revert / reseed | `action, blocks` |
 | `rejected` | §2, §4 | `reason, event type` |
 
 Feedback codes (hosts render words, never numbers): `nudge.cooler`,
-`nudge.warmer`, `noted.cooldown`, `noted.hold`, `noted.no_reading`.
+`nudge.warmer`, `noted.cooldown`, `noted.no_reading`.
 
 ## Appendix A — Φ
 

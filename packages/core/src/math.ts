@@ -96,12 +96,6 @@ export function forget(w: number[], prior: number[], f: number): number[] {
   return w.map((x, i) => (1 - f) * x + f * prior[i]);
 }
 
-/** Caution: w_i <- w_i^(1/lambda^2), normalised (§7.5). */
-export function temper(w: number[], lambda: number): number[] {
-  const e = 1 / (lambda * lambda);
-  return normalize(w.map((x) => Math.pow(x, e)));
-}
-
 export function product(a: number[], b: number[]): number[] {
   return normalize(a.map((x, i) => x * b[i]));
 }
@@ -117,16 +111,9 @@ export function mulberry32(state: number): [number, number] {
 
 export const clamp = (x: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, x));
 
-/** Round half up to a step, with the step's decimal precision (exact output). */
-/** Round to a setpoint step toward the inside of a limit: "down" for a max, "up" for a min. */
-export function roundStepToward(x: number, step: number, dir: "down" | "up"): number {
+/** §2: round to a setpoint step toward the inside of the band (sign +1: down, −1: up), exact output. */
+export function roundInward(x: number, step: number, sign: 1 | -1): number {
   const decimals = Math.max(0, (String(step).split(".")[1] || "").length);
-  const k = dir === "down" ? Math.floor(x / step + 1e-9) : Math.ceil(x / step - 1e-9);
+  const k = sign > 0 ? Math.floor(x / step + 1e-9) : Math.ceil(x / step - 1e-9);
   return Number((k * step).toFixed(decimals));
-}
-
-export function roundStep(x: number, step: number): number {
-  const decimals = Math.max(0, (String(step).split(".")[1] || "").length);
-  const v = Math.floor(x / step + 0.5 + 1e-9) * step;
-  return Number(v.toFixed(decimals));
 }

@@ -35,14 +35,14 @@
     <dt>reading</dt><dd><code>{tin, rh?, equip?, applied?: {heat, cool, mode}}</code> — room temperature and what the device is actually set to.</dd>
     <dt>weather</dt><dd><code>{out, high?, low?}</code></dd>
     <dt>cost</dt><dd><code>{level: 0..1}</code> relative energy price.</dd>
-    <dt>manual</dt><dd><code>{applied}</code> someone set the device by hand: hold until the next block.</dd>
-    <dt>freeze</dt><dd><code>{on}</code> "we've got this": stop learning and drift.</dd>
+    <dt>manual</dt><dd><code>{applied}</code> someone set the device by hand: learned as a weak vote. Your flow owns any hold (just don't actuate the output while it holds; <code>blockEnd</code> tells you when the engine's block ends).</dd>
+    <dt>freeze</dt><dd><code>{on}</code> "we've got this": stop learning and risk.</dd>
     <dt>tick</dt><dd>heartbeat (or set Tick).</dd>
     <dt>restore</dt><dd><code>{snapshot}</code> from output 3.</dd>
   </dl>
   <h3>Outputs</h3>
   <ol class="node-ports">
-    <li>Setpoints: <code>msg.payload = {heat, cool, mode, state, units}</code>, <code>msg.engine</code> = full output. Sent when they change, on the first step after a (re)start and after a restore; or on every step if configured.</li>
+    <li>Setpoints: <code>msg.payload = {heat, cool, mode, state, units, released: {heat, cool}, protect, blockEnd}</code>, <code>msg.engine</code> = full output (band, risk, nudge, reasons). While <code>protect</code> is set you must actuate even if your own rules would leave the device off. Sent when they change, on the first step after a (re)start and after a restore; or on every step if configured.</li>
     <li>Records (votes, decisions, conflicts, block changes) to log anywhere.</li>
     <li>Snapshot of the full state: store it and send it back as a <code>restore</code> event on start.</li>
     <li>Feedback for the voter: <code>msg.topic</code> = code, <code>msg.payload</code> = English text (never numbers).</li>

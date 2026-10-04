@@ -1,10 +1,11 @@
 // open-comfort-engine — reference implementation of spec/SPEC.md.
 export * from "./types";
 export { init, step, restore, serialize, params, blockAt } from "./engine";
+export { SIDES, HEAT, COOL } from "./side";
 export { phi, erfc, mulberry32 } from "./math";
 export { parseWhen } from "./time";
 
-export const SPEC_VERSION = "0.3.0";
+export const SPEC_VERSION = "0.4.0";
 
 /** °F <-> °C helpers for hosts; the engine itself is °C only. */
 export const fToC = (f: number): number => ((f - 32) * 5) / 9;

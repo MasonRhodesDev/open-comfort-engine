@@ -18,30 +18,33 @@ from (`npm run sim`, `packages/core/test/sim.test.ts`).
 
 ## How it works, in plain words
 
-- **Comfort is a range per person per time block** — the coolest and the warmest
-  indoor temperature they accept. "Too hot" at 24.2 °C means their warm limit is
-  below 24.2; "too cold" teaches the other end. Quiet hours with someone home
-  weakly confirm the room is inside their range.
-- **The household band** is the tightest range that keeps everyone *present*
-  comfortable; with people who disagree, the season decides who is protected.
-- **Votes are felt.** A vote moves the band so the room ends up about one step
-  past where it is now (cooler or warmer), and the step shrinks if the person
-  changes their mind — a search, not a number.
-- **Entropy toward idle.** Without complaints the band drifts wider (≤ ~0.3 °C/h,
-  under what people notice), never past what a present person is likely to
-  accept; vacancy drift is faster and stops at a setback, with recovery timed to
-  an expected arrival if you supply one.
-- **Sleep windows.** Sleeping people can't complain, so inside a configured sleep
-  window drift freezes in place, silence counts for nothing and block boundaries
-  stay put.
-- **Protection limits.** An absolute indoor min/max (for what's kept in the space)
-  that overrides everything, including holds and freeze.
-- **Manual changes are holds** — until the next block, or until a time your
-  integration chooses.
-- **Blocks are learned too.** It starts from your schedule and splits, merges or
-  nudges block boundaries as votes show where preferences really change.
-- **It adapts to the weather**: a warm week moves the whole band up a little, as
-  the ASHRAE 55 adaptive comfort model predicts.
+One loop, run on every event:
+
+```
+sense → band → act → learn
+```
+
+- **Sense.** The room temperature, the outdoor temperature, who is present (and
+  whether they're asleep), and votes — all supplied by your integration.
+- **Band.** Comfort is a range per person per time block: the coolest and the
+  warmest indoor temperature they accept. "Too hot" at 24.2 °C means their warm
+  limit is below 24.2; "too cold" teaches the other end. The band is the overlap
+  of everyone *present*, at the current **risk** level, and never wider than
+  your protection limits. Nobody home: the band is your setback.
+- **Act.** The device stays idle while the room is inside the band — or outside
+  it but drifting toward it on its own: a side the outdoor air is already
+  pushing the room away from is *released* (no heating while it's warmer out
+  than in, no cooling while it's cooler out than in). Otherwise it conditions to
+  the nearest edge. A device that can't do "auto" is told which side to run.
+- **Learn.** A vote moves that person's edge, is *felt* right away (the edge
+  ends a step past the room, Thermovote-style), resets risk on that side and
+  un-releases it for a while. Quiet time with people awake raises risk slowly,
+  widening the band toward what people are learned to tolerate. Sleep freezes
+  risk in place. Blocks split, merge and shift as votes show where preferences
+  really change.
+
+Everything is written once per *side* (heat/cool are the same rule with a sign),
+so there is no heating logic and no cooling logic — just the loop.
 
 It is deliberately *identity-agnostic* (users are opaque ids), *presence-agnostic*
 (you tell it who is here), and *device-agnostic* (you tell it what the device can
@@ -63,7 +66,7 @@ Until it's on npm, install a release tarball (Menu → Manage palette → Instal
 upload, or in your Node-RED user directory):
 
 ```sh
-npm install https://github.com/MasonRhodesDev/open-comfort-engine/releases/download/v0.3.0/node-red-contrib-open-comfort-engine-0.3.0.tgz
+npm install https://github.com/MasonRhodesDev/open-comfort-engine/releases/download/v0.4.0/node-red-contrib-open-comfort-engine-0.4.0.tgz
 ```
 
 Import `examples/basic.json` from the package. Feed the `comfort-engine` node:

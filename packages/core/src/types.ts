@@ -4,6 +4,11 @@ export type Mode = "heat" | "cool" | "auto" | "off";
 export type Dir = "hot" | "cold";
 export type Equip = "heat" | "cool" | "fan" | "idle" | "off";
 
+/** §1.1 — a side of the band. Everything per-setpoint is keyed by this. */
+export type SideKey = "heat" | "cool";
+/** A value per side. */
+export type PerSide<T> = { heat: T; cool: T };
+
 /** §3 */
 export interface ZoneConfig {
   id: string;
@@ -15,10 +20,11 @@ export interface ZoneConfig {
     cool: { min: number; max: number };
   };
   seed: { blocks: SeedBlock[] };
-  setback: { heat: number; cool: number };
-  /** §3.3 absolute indoor range that must never be crossed, e.g. to protect what is kept in the space */
+  /** §3.3 the band when nobody is present, and what a released side is set to */
+  setback: PerSide<number>;
+  /** §3.3 absolute indoor range that must never be crossed */
   protect?: { min?: number; max?: number };
-  /** §3.5 times of day when present users are asleep: occupied drift frozen in place, no silence evidence, no trial shifts */
+  /** §3.4 times of day when present users are asleep */
   sleep?: { start: string; end: string }[];
   responseMin: number;
   params?: Partial<Params> & { seed?: number };
@@ -30,28 +36,22 @@ export interface SeedBlock {
   cool: number;
 }
 
-/** §3.4 */
+/** §3.5 */
 export interface Params {
   gridMin: number;
   gridMax: number;
   gridStep: number;
   priorSigma: number;
-  adaptiveSlope: number;
-  adaptiveRef: number;
-  adaptiveTrmMin: number;
-  adaptiveTrmMax: number;
   voteNoise: number;
   silenceSigma: number;
   silenceWeight: number;
   silenceEveryMin: number;
   manualWeight: number;
   forget: number;
-  trmAlpha: number;
-  coolingSeasonTrm: number;
-  qLow: number;
-  qHigh: number;
-  leashBase: number;
-  leashGain: number;
+  qSafe: number;
+  qRisk: number;
+  riskRate: number;
+  riskPauseMin: number;
   stepInit: number;
   stepMin: number;
   stepMax: number;
@@ -60,16 +60,8 @@ export interface Params {
   stallDelta: number;
   nudgeMax: number;
   repeatWindowMin: number;
-  driftRateMax: number;
-  driftRateMin: number;
-  driftCapMax: number;
-  driftCapMin: number;
-  driftPauseMin: number;
-  driftQuantile: number;
+  natureMargin: number;
   preconditionMaxMin: number;
-  vacancyRate: number;
-  vacancyAccelPerHour: number;
-  vacancyRateMax: number;
   responseRateDefault: number;
   costWeight: number;
   convergedSigma: number;
@@ -96,22 +88,16 @@ export const DEFAULT_PARAMS: Params = {
   gridMax: 32,
   gridStep: 0.1,
   priorSigma: 1.5,
-  adaptiveSlope: 0.1,
-  adaptiveRef: 20,
-  adaptiveTrmMin: 10,
-  adaptiveTrmMax: 33.5,
   voteNoise: 0.7,
   silenceSigma: 2.0,
   silenceWeight: 0.3,
   silenceEveryMin: 60,
   manualWeight: 0.5,
   forget: 0.02,
-  trmAlpha: 0.8,
-  coolingSeasonTrm: 18,
-  qLow: 0.2,
-  qHigh: 0.8,
-  leashBase: 1.0,
-  leashGain: 2.0,
+  qSafe: 0.2,
+  qRisk: 0.35,
+  riskRate: 0.25,
+  riskPauseMin: 120,
   stepInit: 1.0,
   stepMin: 0.3,
   stepMax: 2.0,
@@ -120,16 +106,8 @@ export const DEFAULT_PARAMS: Params = {
   stallDelta: 0.3,
   nudgeMax: 3.0,
   repeatWindowMin: 120,
-  driftRateMax: 0.3,
-  driftRateMin: 0.1,
-  driftCapMax: 1.5,
-  driftCapMin: 0.5,
-  driftPauseMin: 120,
-  driftQuantile: 0.3,
+  natureMargin: 1.0,
   preconditionMaxMin: 120,
-  vacancyRate: 0.5,
-  vacancyAccelPerHour: 0.5,
-  vacancyRateMax: 1.0,
   responseRateDefault: 0.05,
   costWeight: 0.5,
   convergedSigma: 0.6,
@@ -158,7 +136,7 @@ export type EngineEvent =
   | { type: "reading"; now: string; tin: number; rh?: number; equip?: Equip; applied?: Applied }
   | { type: "weather"; now: string; out: number; high?: number; low?: number }
   | { type: "cost"; now: string; level: number }
-  | { type: "manual"; now: string; applied: Applied; until?: string }
+  | { type: "manual"; now: string; applied: Applied }
   | { type: "freeze"; now: string; on: boolean }
   | { type: "tick"; now: string }
   | { type: "restore"; now: string; snapshot: Snapshot };
@@ -169,28 +147,29 @@ export interface Applied {
   mode?: Mode;
 }
 
-export type StateName = "SEEDED" | "LEARNING" | "CONVERGED" | "FROZEN" | "HOLD" | "VACANT" | "RECOVERING";
+export type StateName = "SEEDED" | "LEARNING" | "CONVERGED" | "FROZEN" | "VACANT";
 
-/** §7.10 */
+/** §7.8 */
 export interface Output {
   heat: number;
   cool: number;
   mode: Mode;
   state: StateName;
   block: string;
+  /** RFC 3339 start of the next block (hosts that hold "until the next block" use it) */
+  blockEnd: string;
+  /** the band before release and protection */
+  band: PerSide<number>;
+  released: PerSide<boolean>;
+  risk: PerSide<number>;
+  nudge: PerSide<number>;
   reasons: string[];
   confidence: number;
-  coolShift: number;
-  heatShift: number;
-  adaptive: number;
-  nudge: number;
-  drift: number;
-  vacancy: number;
-  /** §7.12: the room is beyond a protection limit; hosts MUST actuate toward the output */
+  /** §7.6: the room is beyond a protection limit; hosts MUST actuate toward the output */
   protect: "max" | "min" | null;
 }
 
-export type FeedbackCode = "nudge.cooler" | "nudge.warmer" | "noted.cooldown" | "noted.hold" | "noted.no_reading";
+export type FeedbackCode = "nudge.cooler" | "nudge.warmer" | "noted.cooldown" | "noted.no_reading";
 
 export interface EngineRecord {
   type: "vote" | "decision" | "conflict" | "blocks" | "rejected";
@@ -211,10 +190,6 @@ export interface Block {
   start: number; // local minute of day
   heat: number;
   cool: number;
-}
-
-export interface EdgeModel {
-  w: number[];
 }
 
 export interface UserBlockModel {
@@ -241,7 +216,7 @@ export interface VoteHist {
 
 /** §5.1 / §9 — the complete engine state, JSON-serialisable. */
 export interface Snapshot {
-  snapshotVersion: 1;
+  snapshotVersion: 2;
   zone: string;
   seedKey: string;
   blocks: Block[];
@@ -251,18 +226,16 @@ export interface Snapshot {
   lastSilenceAt: Record<string, number>;
   reading: { tin: number; rh: number | null; equip: Equip | null; applied: Applied | null; at: number } | null;
   weather: { out: number; high: number | null; low: number | null; at: number } | null;
-  trm: number | null;
-  day: { date: string | null; sum: number; n: number; hl: number | null };
-  nudge: { delta: number; blockId: string | null };
-  drift: { value: number; pausedUntil: number | null };
-  vacancy: { since: number | null; value: number; recovering: boolean };
-  hold: { until: number; applied: Applied; host?: boolean } | null;
+  risk: PerSide<number>;
+  /** §7.3 per side: until when a complaint keeps the side conservative and un-released */
+  paused: PerSide<number | null>;
+  nudge: PerSide<number> & { blockId: string | null };
+  released: PerSide<boolean>;
   frozen: boolean;
   protecting: "max" | "min" | null;
   responseRate: number;
   structure: { rng: number; lastRunDate: string | null; trials: Trial[]; votes: VoteHist[] };
   cost: number;
-  lastShift: Record<string, { cool: number; heat: number }>;
   conflictDay: Record<string, string>;
   lastOutput: Output | null;
   lastBlockId: string | null;

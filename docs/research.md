@@ -56,6 +56,17 @@ thermostat treating overrides as penalties
 | step 1.0 °C, halve on reversal | Thermovote step trade-off; Robbins–Monro style step decay (https://www.di.ens.fr/~fbach/orsay2016/lecture3.pdf) |
 | drift ceiling at the 30th percentile, protect the heat-sensitive in cooling | design choice validated in `packages/core/test/sim` (median ceiling caused steady complaints) |
 
+## Added for 0.4.0 (release, risk, sleep) — from search-result summaries only; verify before quoting
+
+- **Wider deadband saves energy**: Hoyt, Arens & Zhang (2015) *Extending air temperature setpoints*, Building and Environment 88 — raising cooling 22.2→25 °C saved ~29 % cooling / 27 % HVAC energy; lowering heating 21.1→20 °C saved ~34 % terminal heating (office simulations). https://www.sciencedirect.com/science/article/abs/pii/S0360132314003023 *(summary)*
+- **Setpoints that follow outdoor temperature**: Parkinson, de Dear & Brager (2020) *Nudging the adaptive thermal comfort model*, Energy and Buildings 206, doi:10.1016/j.enbuild.2019.109559 — seasonal/synoptic setpoint shifts; ~7–15 % HVAC energy per °C of band expansion beyond a ~2 K deadband (figure seen in a snippet, attribution unconfirmed) *(summary)*
+- **Nudging only in the saving direction**: Nest Labs (2013) *Seasonal Savings* white paper — schedules nudged over weeks, ~5–10 % less heating in a field trial, 80 % kept the result *(summary)*
+- **Outdoor lockout of heating**: ASHRAE Guideline 36-2018 (addendum y) — hot-water plant lockout above an outdoor temperature (defaults 65–75 °F); balance-point temperature theory for residential envelopes *(summary)*
+- **Changeover deadband**: ASHRAE 90.1 / Title 24 require ≥ 5 °F between heating and cooling setpoints where both exist *(summary)*
+- **Sleep**: Lan, Tsuzuki, Liu & Lian (2017) *Thermal environment and sleep quality: a review*, Energy and Buildings 149 — even moderate heat or cold exposure reduces sleep quality; avoid letting temperature fall toward morning *(summary)*
+- **Alliesthesia**: de Dear (2011), Building Research & Information 39(2), doi:10.1080/09613218.2011.552269 — a slow drift feels pleasant or unpleasant by direction *(summary)*
+- No published work was found on applying the adaptive shift only in the energy-saving direction, or on alternating heat/cool under auto changeover within a day; both are this project's own design choices.
+
 ## Gaps this project fills
 
 No open-source component did vote-based, per-person, per-time-block comfort

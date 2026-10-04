@@ -9,14 +9,13 @@
     "mode",
     "state",
     "block",
+    "blockEnd",
+    "band",
+    "released",
+    "risk",
+    "nudge",
     "reasons",
     "confidence",
-    "coolShift",
-    "heatShift",
-    "adaptive",
-    "nudge",
-    "drift",
-    "vacancy",
     "protect"
   ],
   "properties": {
@@ -40,9 +39,7 @@
         "LEARNING",
         "CONVERGED",
         "FROZEN",
-        "HOLD",
-        "VACANT",
-        "RECOVERING"
+        "VACANT"
       ]
     },
     "block": {
@@ -53,15 +50,13 @@
       "items": {
         "enum": [
           "seed",
-          "adaptive",
           "learned",
           "conflict",
           "nudge",
-          "drift",
-          "vacancy",
+          "risk",
+          "vacant",
+          "released",
           "precondition",
-          "recovering",
-          "hold",
           "frozen",
           "sleep",
           "protect",
@@ -75,25 +70,21 @@
       "minimum": 0,
       "maximum": 1
     },
-    "coolShift": {
-      "type": "number"
-    },
-    "heatShift": {
-      "type": "number"
-    },
-    "adaptive": {
-      "type": "number"
-    },
     "nudge": {
-      "type": "number"
-    },
-    "drift": {
-      "type": "number",
-      "minimum": 0
-    },
-    "vacancy": {
-      "type": "number",
-      "minimum": 0
+      "type": "object",
+      "required": [
+        "heat",
+        "cool"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "heat": {
+          "type": "number"
+        },
+        "cool": {
+          "type": "number"
+        }
+      }
     },
     "protect": {
       "enum": [
@@ -101,6 +92,59 @@
         "min",
         null
       ]
+    },
+    "blockEnd": {
+      "type": "string",
+      "description": "RFC 3339 start of the next block",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}[Tt ]\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?([Zz]|[+-]\\d{2}:\\d{2})$"
+    },
+    "band": {
+      "type": "object",
+      "required": [
+        "heat",
+        "cool"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "heat": {
+          "type": "number"
+        },
+        "cool": {
+          "type": "number"
+        }
+      }
+    },
+    "released": {
+      "type": "object",
+      "required": [
+        "heat",
+        "cool"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "heat": {
+          "type": "boolean"
+        },
+        "cool": {
+          "type": "boolean"
+        }
+      }
+    },
+    "risk": {
+      "type": "object",
+      "required": [
+        "heat",
+        "cool"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "heat": {
+          "type": "number"
+        },
+        "cool": {
+          "type": "number"
+        }
+      }
     }
   },
   "additionalProperties": false
