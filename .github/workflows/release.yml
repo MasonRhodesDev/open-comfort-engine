@@ -26,4 +26,5 @@ jobs:
           v="${GITHUB_REF_NAME#v}"
           url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/node-red-contrib-open-comfort-engine-${v}.tgz"
           printf 'Open Comfort Engine %s.\n\nInstall in Node-RED (user directory or Manage palette upload):\n\n    npm install %s\n' "$v" "$url" > notes.md
-          gh release create "${GITHUB_REF_NAME}" *.tgz --title "${GITHUB_REF_NAME}" --notes-file notes.md
+          pre=""; case "$v" in *-*) pre="--prerelease";; esac
+          gh release create "${GITHUB_REF_NAME}" *.tgz --title "${GITHUB_REF_NAME}" --notes-file notes.md $pre
