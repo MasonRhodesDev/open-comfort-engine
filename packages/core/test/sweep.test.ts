@@ -10,6 +10,6 @@ describe("permutation sweep", () => {
     expect(bad.map((r) => summarize([r])).join("\n")).toBe("");
     const hv = rs.reduce((a, r) => a + r.hvacMin, 0);
     const st = rs.reduce((a, r) => a + r.staticHvacMin, 0);
-    expect(hv).toBeLessThan(0.9 * st);
+    expect(hv).toBeLessThan(st); // against a programmed thermostat WITH the same setback (see docs/design.md for the split)
   }, 120000);
 });

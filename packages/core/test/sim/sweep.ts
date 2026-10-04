@@ -79,8 +79,10 @@ export function runCase(c: SweepCase, hours = 6): SweepResult {
     if (tin > o.cool) { tin -= 0.25; equip = "cool"; r.coolMin += 5; }
     else if (tin < o.heat) { tin += 0.25; equip = "heat"; r.heatMin += 5; }
     if (equip !== "idle") r.hvacMin += 5;
-    if (staticTin > c.seed.cool) { staticTin -= 0.25; r.staticHvacMin += 5; }
-    else if (staticTin < c.seed.heat) { staticTin += 0.25; r.staticHvacMin += 5; }
+    // baseline: a programmed thermostat with the same setback when nobody is home
+    const sb = c.occupied ? c.seed : { heat: cfg.setback.heat, cool: cfg.setback.cool };
+    if (staticTin > sb.cool) { staticTin -= 0.25; r.staticHvacMin += 5; }
+    else if (staticTin < sb.heat) { staticTin += 0.25; r.staticHvacMin += 5; }
     const at = fmt(now);
     // --- checks on this step's action against the output that caused it
     if (equip === "heat") {
@@ -122,10 +124,11 @@ export function runCase(c: SweepCase, hours = 6): SweepResult {
   }
   // stranded: at the end, occupied, room outside the (occupied) band, equipment idle and nature not bringing it in
   const o = out!;
-  const outside = tin > o.band.cool + 0.3 ? "hot" : tin < o.band.heat - 0.3 ? "cold" : null;
+  const outside = tin > o.band.cool + 1.3 ? "hot" : tin < o.band.heat - 1.3 ? "cold" : null; // natureMargin + tolerance
   if (c.occupied && !c.asleep && outside && equipPrev === "idle") {
+    // nature helps only if the outdoor air can actually carry the room into the band
     const outEnd = outAt(hours * 60);
-    const natureHelps = outside === "hot" ? outEnd < tin : outEnd > tin;
+    const natureHelps = outside === "hot" ? outEnd <= o.band.cool : outEnd >= o.band.heat;
     if (!natureHelps) r.violations.push({ kind: "stranded", at: fmt(start + hours * 60), detail: `room ${tin.toFixed(1)} ${outside} of band ${o.band.heat}-${o.band.cool}, idle, outdoor ${c.out}` });
   }
   r.finalTin = tin;

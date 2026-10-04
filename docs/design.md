@@ -73,34 +73,53 @@ and `blockEnd` tells it when the engine's block ends). Every per-setpoint rule
 is written once against a signed *side* (§1.1); the reference implementation
 has no heat-specific or cool-specific code path.
 
-**What the simulators say (42-day household, seeds 7/11/13/17; 1080-case
-permutation sweep):**
+**What the simulators say** (household: two strict synthetic occupants, 42 days,
+seeds 7/11/13/17, metrics over week 6; sweep: 1080 permutations, 6 h each, no
+votes). Reproduce with `npx vitest run` and `npm run sweep`.
 
-- vs a plain programmed thermostat: 45–60 % less discomfort and 20–25 % less
-  HVAC runtime in week 6 (household); 21 % less HVAC across the sweep.
-- *Release is neutral-to-positive*: it won on three seeds and lost on one. The
-  loss is structural, not noise: releasing a side while the room is well
-  outside the band on that side leaves people uncomfortable until the (slow)
-  outdoor air fixes it; they complain, and the complaint pause then costs more
-  conditioning than the release saved. We tried bounding release to "only while
-  the room is inside the loosest band we would ever use" — it helped the
-  household sim slightly but made the engine heat a cold vacant house on a hot
-  morning, exactly the behaviour the owner's rule forbids. The rule stands as
-  stated: the outdoor vector decides; a complaint overrides it.
-- Widening *both* sides with risk is equivalent to the owner's "widen toward
-  outdoor": the side the air pushes the room away from is released anyway, so
-  widening it is inert — and it avoids a band jump when the vector reverses.
+- *Engine vs a programmed thermostat* (seed schedule, frozen, no nudge, no
+  release; the sweep's baseline also has the same setback when nobody is home):
+  household week 6, four seeds summed — discomfort 1515 vs 4260 person-minutes
+  (−64 %), HVAC 6155 vs 8440 minutes (−27 %). Sweep: occupied-awake −12 %,
+  asleep −6 %, vacant 0 % (both sit at the setback; the earlier "21 %" headline
+  came from a baseline without a setback and is withdrawn).
+- *Release on vs off* (`natureMargin: 99` disables it), same four seeds, week 6
+  summed: discomfort 1515 vs 1700 (release 11 % better), HVAC 6155 vs 6125
+  (equal). Over all 42 days release has slightly *more* discomfort on three of
+  four seeds (−5 % HVAC on one, equal elsewhere): early on, the engine's idea
+  of what people tolerate is loose, and a released side lets the room sit
+  there until a complaint. The sim's room has a ~2–4 h time constant and its
+  occupants complain whenever they are outside their true range, so this is a
+  pessimistic view of release; the real case it exists for (a 99 °F morning
+  with the room 0.1 °C under the heating edge) is one it cannot show.
+- *Release was revised twice by the sweep.* Pure "outdoor warmer → no heating"
+  left a 14 °C room at 15 °C with a 15 °C outdoor forever (the air cannot reach
+  an 18 °C band). Requiring the air to be able to reach the band instead
+  heated a 14 °C room with 20 °C outside all the way to 22 °C, wasting the
+  free 6 °C. The rule that survives: released while the air pushes the room
+  away from the edge; taken back when the air pushes the other way (beyond
+  the margin, so jitter cannot flap it) or when the room has caught up with
+  the air and that was not enough. One rule, two thresholds, no filter.
+- An adversarial review of the first cut found: release flapping on jittery
+  outdoor readings (hysteresis was one-sided), mode flapping on devices
+  without "auto" (no memory), nudges outliving the people who asked for them,
+  votes from users the host says are absent moving the room, risk accruing
+  before anyone was present, manual changes subject to the vote cooldown and
+  counting as complaints, and no validation of non-finite readings. All fixed
+  in the 0.4.0 release; each fix is a change to the loop's definition, not a
+  new rule (symmetric hysteresis; mode keeps its side; nudge cleared on a
+  presence change; absent votes learn but don't act; elapsed time from
+  `presence.since`; manual = weak vote, not complaint; reject `value`).
+- Widening *both* sides with risk: only the side the air pushes the room toward
+  can cost energy; the other is usually released, and when it is not, widening
+  it is harmless because the room is not heading there.
 - Risk is linear between the safe and risky *quantiles* (not a moving quantile),
-  so the band is continuous in risk and exact at the seed; with a 0.1 °C grid a
-  moving quantile jumped a cell within a minute of presence.
-- Hosts should feed the outdoor temperature at least every 10 min: at the daily
-  crossing of outdoor and room temperature a 30-min-old value releases the
-  wrong side for a few minutes (harmless — no equipment runs — but visible).
-- The sweep (`npm run sweep`) checks every permutation of common indoor /
-  outdoor / band / occupancy / sleep plus outdoor swings through the room
-  temperature for inverted or fighting equipment, heat+cool in one hour,
-  setpoint reversals, released-but-running sides and stranded rooms: zero
-  findings. Two things it flagged and we *kept*: a released side still heats /
-  cools to the setback floor / ceiling (that is the floor's job), and 5–10 min
-  of conditioning inside the 1 °C release margin at a crossing (the margin is
-  what stops flapping).
+  so the band is continuous in risk and exact at the seed.
+- Hosts should feed the outdoor temperature at least every 10 min.
+- Known and accepted: a released side still heats / cools to the setback floor /
+  ceiling (that is the floor's job); up to natureMargin (1 °C) of conditioning
+  against the air near a crossing; risk 1 is the steady state after four quiet
+  hours, so a side that is never exercised (heating in summer) enters its
+  season at the risky edge and the first complaint of the season resets it;
+  two users voting opposite ways inside the device's minimum gap — the side
+  the air pushes the room toward wins and a `conflict` record is written.

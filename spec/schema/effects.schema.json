@@ -43,6 +43,7 @@
         "nudge.cooler",
         "nudge.warmer",
         "noted.cooldown",
+          "noted.absent",
         "noted.hold",
         "noted.no_reading"
       ]

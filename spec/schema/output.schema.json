@@ -79,10 +79,24 @@
       "additionalProperties": false,
       "properties": {
         "heat": {
-          "type": "number"
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
         },
         "cool": {
-          "type": "number"
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
         }
       }
     },

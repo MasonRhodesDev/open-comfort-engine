@@ -162,14 +162,14 @@ export interface Output {
   band: PerSide<number>;
   released: PerSide<boolean>;
   risk: PerSide<number>;
-  nudge: PerSide<number>;
+  nudge: PerSide<number | null>;
   reasons: string[];
   confidence: number;
   /** §7.6: the room is beyond a protection limit; hosts MUST actuate toward the output */
   protect: "max" | "min" | null;
 }
 
-export type FeedbackCode = "nudge.cooler" | "nudge.warmer" | "noted.cooldown" | "noted.no_reading";
+export type FeedbackCode = "nudge.cooler" | "nudge.warmer" | "noted.cooldown" | "noted.absent" | "noted.no_reading";
 
 export interface EngineRecord {
   type: "vote" | "decision" | "conflict" | "blocks" | "rejected";
@@ -229,7 +229,8 @@ export interface Snapshot {
   risk: PerSide<number>;
   /** §7.3 per side: until when a complaint keeps the side conservative and un-released */
   paused: PerSide<number | null>;
-  nudge: PerSide<number> & { blockId: string | null };
+  /** §7.2 per side: the value a felt vote pinned the edge to, or null */
+  nudge: PerSide<number | null>;
   released: PerSide<boolean>;
   frozen: boolean;
   protecting: "max" | "min" | null;

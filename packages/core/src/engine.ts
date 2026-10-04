@@ -54,7 +54,7 @@ export function init(config: ZoneConfig): State {
     weather: null,
     risk: { heat: 0, cool: 0 },
     paused: { heat: null, cool: null },
-    nudge: { heat: 0, cool: 0, blockId: null },
+    nudge: { heat: null, cool: null },
     released: { heat: false, cool: false },
     frozen: false,
     protecting: null,
@@ -80,13 +80,14 @@ export function restore(snapshot: Snapshot): State {
     s.snapshotVersion = 2;
     s.risk = { heat: 0, cool: 0 };
     s.paused = { heat: null, cool: null };
-    s.nudge = { heat: 0, cool: 0, blockId: null };
+    s.nudge = { heat: null, cool: null };
     s.released = { heat: false, cool: false };
     s.lastOutput = null;
     for (const k of ["drift", "vacancy", "hold", "trm", "day", "lastShift"]) delete s[k];
   }
   if (s.protecting === undefined) s.protecting = null;
   if (!s.conflictDay) s.conflictDay = {};
+  if (s.nudge && "blockId" in s.nudge) s.nudge = { heat: null, cool: null };
   return s;
 }
 
@@ -154,7 +155,7 @@ function computeOutput(ctx: Ctx, b: Block): Output {
 
   // §7.1 band, §7.2 nudge
   const base = band(ctx, b, present);
-  const edge = perSide((side) => base[side.key] - side.sign * s.nudge[side.key]);
+  const edge = perSide((side) => (s.nudge[side.key] === null ? base[side.key] : inner(side, base[side.key], s.nudge[side.key] as number)));
 
   // §7.5 pre-conditioning: toward the next block, and toward an expected arrival
   const rate = Math.max(s.responseRate, 1e-6);
@@ -173,12 +174,16 @@ function computeOutput(ctx: Ctx, b: Block): Output {
   const extra = (s.presence.expectedUsers || []).filter((u) => !present.includes(u));
   if (exp !== null && exp > t && extra.length) tighten(band(ctx, b, [...present, ...extra]), (exp - t) / MIN);
 
-  // §7.4 nature: a side the outdoor air pushes the room away from is released to setback;
-  // never while a complaint on that side is fresh (§7.3)
+  // §7.4 nature: a side is released to setback while the outdoor air pushes the room away from it. It is
+  // taken back when the air pushes the other way (beyond natureMargin, so jitter cannot flap it), or when
+  // the room has caught up with the air (within half the margin: it only ever approaches it) and the air
+  // could not take it inside the edge (nobody is left stranded); never while a complaint is fresh (§7.3)
   const paused = (side: Side) => s.paused[side.key] !== null && t < (s.paused[side.key] as number);
   for (const side of SIDES) {
-    const push = out !== null && tin !== null ? side.sign * (out - tin) : null;
-    if (push === null || push >= 0 || paused(side)) s.released[side.key] = false;
+    if (out === null || tin === null || paused(side)) { s.released[side.key] = false; continue; }
+    const push = side.sign * (out - tin); // < 0: the air pushes the room away from this edge
+    const reach = inwardOf(side, edge[side.key], out); // < 0: the outdoor temperature is outside this edge
+    if (push >= p.natureMargin || (push >= -p.natureMargin / 2 && reach < 0)) s.released[side.key] = false;
     else if (push <= -p.natureMargin) s.released[side.key] = true;
   }
   const wanted = perSide((side) => (s.released[side.key] ? ctx.cfg.setback[side.key] : edge[side.key]));
@@ -191,10 +196,10 @@ function computeOutput(ctx: Ctx, b: Block): Output {
     if (sp.cool - sp.heat >= cap.minGap - 1e-9) return;
     gapped = true;
     const give = sideOf(keep.key === "cool" ? "heat" : "cool");
-    sp[give.key] = roundInward(clamp(sp[keep.key] + give.sign * cap.minGap, cap[give.key].min, cap[give.key].max), cap.setpointStep, keep.sign);
+    sp[give.key] = clamp(roundInward(sp[keep.key] + give.sign * cap.minGap, cap.setpointStep, keep.sign), cap[give.key].min, cap[give.key].max);
   };
   // a side someone just asked for is kept; otherwise the side the room is pushed toward
-  const asked = SIDES.filter((side) => s.nudge[side.key] > 0);
+  const asked = SIDES.filter((side) => s.nudge[side.key] !== null);
   fixGap(asked.length === 1 ? asked[0] : pushedSide(ctx));
 
   // §7.6 protection: clamp (the other side gives way again), and track whether the room is beyond a limit
@@ -216,11 +221,14 @@ function computeOutput(ctx: Ctx, b: Block): Output {
   }
 
   // mode
+  // mode: auto if the device has it; else the side the room is outside of; else keep the side it was
+  // running (hysteresis); else the side opposing the outdoor air
   let mode: Mode;
   if (cap.modes.includes("auto")) mode = "auto";
   else {
     const outside = tin === null ? null : SIDES.find((side) => !s.released[side.key] && inwardOf(side, sp[side.key], tin) < 0) ?? null;
-    const want: Mode = outside ? outside.key : pushedSide(ctx).key;
+    const prev = s.lastOutput && SIDES.find((side) => side.key === s.lastOutput!.mode && !s.released[side.key]);
+    const want: Mode = outside ? outside.key : prev ? prev.key : pushedSide(ctx).key;
     mode = cap.modes.includes(want) ? want : cap.modes[0];
   }
 
@@ -230,7 +238,7 @@ function computeOutput(ctx: Ctx, b: Block): Output {
   if (st === "SEEDED") reasons.push("seed");
   if (st === "LEARNING" || st === "CONVERGED") reasons.push("learned");
   if (conflict) reasons.push("conflict");
-  if (SIDES.some((side) => s.nudge[side.key] > 0)) reasons.push("nudge");
+  if (SIDES.some((side) => s.nudge[side.key] !== null)) reasons.push("nudge");
   if (occupied && SIDES.some((side) => s.risk[side.key] > 0)) reasons.push("risk");
   if (st === "VACANT") reasons.push("vacant");
   if (SIDES.some((side) => s.released[side.key])) reasons.push("released");
@@ -254,7 +262,7 @@ function computeOutput(ctx: Ctx, b: Block): Output {
     band: base,
     released: { ...s.released },
     risk: { ...s.risk },
-    nudge: { heat: s.nudge.heat, cool: s.nudge.cool },
+    nudge: { ...s.nudge },
     reasons,
     confidence: confidence(ctx, b),
     protect: s.protecting,
@@ -263,16 +271,27 @@ function computeOutput(ctx: Ctx, b: Block): Output {
 
 // ---------------------------------------------------------------- learn
 
-/** §7.2: a vote (or manual change) on one side from one user; `target` is where the edge must end up. */
-function felt(ctx: Ctx, b: Block, user: string, side: Side, target: number, weight = 1): boolean {
+/** §7.2: the edge is pinned at `target` for the rest of the block (never outward of an earlier pin,
+ * never more than nudgeMax inward of the band). */
+function nudgeTo(ctx: Ctx, b: Block, side: Side, target: number) {
+  const s = ctx.s;
+  const edge = bandEdge(ctx, b, side, ctx.present);
+  const prev = s.nudge[side.key];
+  let pin = prev === null ? target : inner(side, prev, target);
+  if (inwardOf(side, edge, pin) > ctx.p.nudgeMax) pin = edge - side.sign * ctx.p.nudgeMax;
+  s.nudge[side.key] = pin;
+}
+
+/** §7.2 / §7.3: a vote on one side from a present user — learned, felt (unless in cooldown), and a complaint. */
+function vote(ctx: Ctx, b: Block, user: string, side: Side): boolean {
   const s = ctx.s;
   const p = ctx.p;
   const t = ctx.w.t;
   const r = s.reading!;
   const m = getModel(ctx, user, b);
   s.lastSilenceAt[user] = t;
-  if (!s.frozen) observeVote(ctx, m, b, side, r.tin, weight);
-  // §7.3 risk on this side starts over, and the side stays conservative for a while
+  if (!s.frozen) observeVote(ctx, m, b, side, r.tin);
+  // §7.3 a complaint: risk on this side starts over and the side stays conservative (and un-released) for a while
   s.risk[side.key] = 0;
   s.paused[side.key] = t + p.riskPauseMin * MIN;
   const last = m.lastVote;
@@ -284,9 +303,7 @@ function felt(ctx: Ctx, b: Block, user: string, side: Side, target: number, weig
   if (nudge) {
     if (last && last.dir !== side.dir) m.step = Math.max(p.stepMin, m.step / 2);
     else if (last && last.dir === side.dir && t - last.at < p.repeatWindowMin * MIN) m.step = Math.min(p.stepMax, m.step * p.stepGrow);
-    const edge = bandEdge(ctx, b, side, ctx.present);
-    s.nudge[side.key] = clamp(Math.max(s.nudge[side.key], inwardOf(side, edge, target)), 0, p.nudgeMax);
-    s.nudge.blockId = b.id;
+    nudgeTo(ctx, b, side, r.tin - side.sign * m.step);
   }
   m.lastVote = { at: t, dir: side.dir, tin: r.tin };
   ctx.dirty = true;
@@ -300,9 +317,12 @@ function onVote(ctx: Ctx, b: Block, ev: Extract<EngineEvent, { type: "vote" }>) 
   revertTrials(ctx, ctx.w.minute);
   let updated = false;
   if (!s.reading) ctx.feedback = "noted.no_reading";
-  else {
-    const m = getModel(ctx, ev.user, b);
-    const nudged = felt(ctx, b, ev.user, side, s.reading.tin - side.sign * m.step);
+  else if (!ctx.present.includes(ev.user)) {
+    // the host says this user is not here: learn, but the room is not theirs to move (§7.2)
+    if (!s.frozen) { observeVote(ctx, getModel(ctx, ev.user, b), b, side, s.reading.tin); updated = true; ctx.dirty = true; }
+    ctx.feedback = "noted.absent";
+  } else {
+    const nudged = vote(ctx, b, ev.user, side);
     updated = !s.frozen;
     ctx.feedback = nudged ? (side.key === "cool" ? "nudge.cooler" : "nudge.warmer") : "noted.cooldown";
   }
@@ -318,13 +338,14 @@ function onVote(ctx: Ctx, b: Block, ev: Extract<EngineEvent, { type: "vote" }>) 
     present: s.presence.known ? [...s.presence.users] : null,
     applied: s.reading?.applied ?? null,
     step: m?.step ?? ctx.p.stepInit,
-    nudge: { heat: s.nudge.heat, cool: s.nudge.cool },
+    nudge: { ...s.nudge },
     state: stateName(ctx, b),
     updated,
   });
 }
 
-/** §7.2: a manual change is a weak vote from everyone present on each side that moved inward. */
+/** §7.2: a manual change inward is a weak vote from everyone present on that side, felt at the applied
+ * value; not a complaint (no cooldown, no step, no risk reset, no un-release). */
 function onManual(ctx: Ctx, b: Block, ev: Extract<EngineEvent, { type: "manual" }>) {
   const s = ctx.s;
   const lo = s.lastOutput;
@@ -332,7 +353,9 @@ function onManual(ctx: Ctx, b: Block, ev: Extract<EngineEvent, { type: "manual" 
   for (const side of SIDES) {
     const applied = ev.applied[side.key];
     if (applied === undefined || inwardOf(side, lo[side.key], applied) <= 1e-9) continue;
-    for (const u of ctx.present) felt(ctx, b, u, side, applied, ctx.p.manualWeight);
+    if (!s.frozen) for (const u of ctx.present) observeVote(ctx, getModel(ctx, u, b), b, side, s.reading.tin, ctx.p.manualWeight);
+    nudgeTo(ctx, b, side, applied);
+    ctx.dirty = true;
   }
 }
 
@@ -344,6 +367,7 @@ function onPresence(ctx: Ctx, ev: Extract<EngineEvent, { type: "presence" }>) {
   for (const u of users) if (!before.has(u)) s.lastSilenceAt[u] = t;
   for (const u of Object.keys(s.lastSilenceAt)) if (!users.includes(u)) delete s.lastSilenceAt[u];
   const changed = !s.presence.known || users.join("\u0000") !== [...s.presence.users].sort().join("\u0000");
+  if (changed) s.nudge = { heat: null, cool: null }; // §7.2: a nudge belongs to the people who asked for it
   const exp = ev.expectedArrival ? parseWhen(ev.expectedArrival).t : null;
   const expUsers = ev.expectedUsers ? [...new Set(ev.expectedUsers.map(String))].sort() : [];
   s.presence = { known: true, users, expectedArrival: exp, expectedUsers: expUsers, since: changed ? t : s.presence.since };
@@ -372,7 +396,9 @@ function learn(ctx: Ctx, b: Block, prevT: number | null) {
   const s = ctx.s;
   const p = ctx.p;
   const t = ctx.w.t;
-  const dtMin = prevT === null ? 0 : Math.min(Math.max(0, (t - prevT) / MIN), 60);
+  // elapsed time counts only while someone has been present (§7.3)
+  const from = prevT === null ? null : Math.max(prevT, s.presence.since ?? prevT);
+  const dtMin = from === null ? 0 : Math.min(Math.max(0, (t - from) / MIN), 60);
   const present = ctx.present;
   if (s.frozen || present.length === 0 || asleep(ctx)) return;
   if (s.reading) {
@@ -406,6 +432,7 @@ export function step(state: State, event: EngineEvent, config: ZoneConfig): Step
   }
   if (!EVENT_TYPES.has((event as { type?: string }).type as string)) return reject(state, config, nowStr, "type", (event as { type?: string }).type);
   if (event.type !== "restore" && s.lastEventAt !== null && w.t < s.lastEventAt) return reject(state, config, nowStr, "time", event.type);
+  if ((event.type === "reading" && !Number.isFinite(event.tin)) || (event.type === "weather" && !Number.isFinite(event.out))) return reject(state, config, nowStr, "value", event.type);
 
   if (event.type === "restore") {
     const r = restore(event.snapshot);
@@ -439,7 +466,7 @@ export function step(state: State, event: EngineEvent, config: ZoneConfig): Step
   }
   // §5.3 step 3: block change
   let b = blockAt(s.blocks, w.minute);
-  if (s.lastBlockId !== null && s.lastBlockId !== b.id) s.nudge = { heat: 0, cool: 0, blockId: null };
+  if (s.lastBlockId !== null && s.lastBlockId !== b.id) s.nudge = { heat: null, cool: null };
 
   // §5.3 step 4: apply event
   switch (event.type) {
@@ -524,7 +551,7 @@ function emptyOutput(state: State, config: ZoneConfig, nowStr: string): Output {
     band: { heat: b.heat, cool: b.cool },
     released: { heat: false, cool: false },
     risk: { heat: 0, cool: 0 },
-    nudge: { heat: 0, cool: 0 },
+    nudge: { heat: null, cool: null },
     reasons: ["seed"],
     confidence: 0,
     protect: null,

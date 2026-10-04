@@ -90,7 +90,25 @@ describe("nudge (§7.2)", () => {
     expect(last.effects.feedback).toBe("nudge.cooler");
     expect(o.cool).toBeLessThanOrEqual(24.2 - 1.0 + 1e-9);
     expect(o.heat).toBe(before.heat);
-    expect(o.nudge.heat).toBe(0);
+    expect(o.nudge.heat).toBeNull();
+  });
+  it("a nudge belongs to the people who asked: it clears when the present set changes, and absent users don't nudge", () => {
+    const { s, last } = drive([...base(["u1"], 24.2), { type: "vote", now: at(1, "09:20"), user: "u1", dir: "hot" }, { type: "presence", now: at(1, "10:00"), users: [] }]);
+    expect(s.nudge.cool).toBeNull();
+    expect(last.output.cool).toBe(house.setback.cool);
+    const ghost = drive([...base(["u1"], 24.2), { type: "vote", now: at(1, "09:20"), user: "ghost", dir: "hot" }]);
+    expect(ghost.last.effects.feedback).toBe("noted.absent");
+    expect(ghost.s.nudge.cool).toBeNull();
+    expect(ghost.s.models.ghost.b0.n).toBe(1);
+  });
+  it("risk accrues only while someone is present", () => {
+    const { s } = drive([{ type: "weather", now: at(1, "08:00"), out: 24 }, { type: "reading", now: at(1, "08:01"), tin: 24, equip: "idle" }, { type: "presence", now: at(1, "09:00"), users: ["u1"] }]);
+    expect(s.risk.cool).toBe(0);
+  });
+  it("rejects a non-finite reading", () => {
+    const { s } = drive(base());
+    const r = step(s, { type: "reading", now: at(1, "10:00"), tin: NaN } as any, house);
+    expect(r.effects.records[0]).toMatchObject({ type: "rejected", reason: "value" });
   });
   it("a second vote inside the cooldown is noted, not acted on", () => {
     const { last } = drive([...base(["u1"], 24.2), { type: "vote", now: at(1, "09:20"), user: "u1", dir: "hot" }, { type: "vote", now: at(1, "09:25"), user: "u1", dir: "hot" }]);
@@ -101,7 +119,7 @@ describe("nudge (§7.2)", () => {
     const o = lastOf(drive([...base(["u1"], 24.0), { type: "manual", now: at(1, "10:00"), applied: { cool: 22.5, heat: 18 } }]).outs);
     expect(o.cool).toBe(22.5);
     expect(o.heat).toBe(control.heat); // 22.5 − 20 ≥ minGap 1.6: the outward heat change is ignored
-    expect(o.nudge.heat).toBe(0);
+    expect(o.nudge.heat).toBeNull();
     expect(o.reasons).not.toContain("gap");
   });
   it("a manual change that breaks the device gap keeps the side that was set", () => {
@@ -173,15 +191,36 @@ describe("nature (§7.4)", () => {
     const hot = lastOf(drive(base(["u1"], 26, 35)).outs);
     expect(hot.released.cool).toBe(false);
   });
-  it("hysteresis: released at the margin, un-released only once the vector crosses zero", () => {
+  it("hysteresis: released at +margin, un-released at −margin; jitter inside the band changes nothing", () => {
     let { s } = drive(base(["u1"], 22, 23.5));
     expect(s.released.heat).toBe(true);
     let r = step(s, { type: "weather", now: at(1, "10:00"), out: 22.5 }, house);
     expect(r.state.released.heat).toBe(true);
-    r = step(r.state, { type: "weather", now: at(1, "10:30"), out: 21.9 }, house);
+    r = step(r.state, { type: "weather", now: at(1, "10:10"), out: 21.4 }, house);
+    expect(r.state.released.heat).toBe(true); // crossed zero, still inside the margin
+    r = step(r.state, { type: "weather", now: at(1, "10:30"), out: 20.9 }, house);
     expect(r.state.released.heat).toBe(false);
     r = step(r.state, { type: "weather", now: at(1, "11:00"), out: 22.5 }, house);
     expect(r.state.released.heat).toBe(false); // inside the margin: nothing changes
+    // jitter around the room temperature never flaps
+    for (let i = 0; i < 12; i++) { r = step(r.state, { type: "weather", now: at(1, `${11 + Math.floor(i / 4)}:${String((i % 4) * 15 + 5).padStart(2, "0")}`), out: i % 2 ? 22.6 : 21.4 }, house); expect(r.state.released.heat).toBe(false); expect(r.output.heat).toBeGreaterThan(house.setback.heat); }
+  });
+  it("a manual change is not a complaint: it does not un-release, a vote does", () => {
+    const o = lastOf(drive([...base(["u1"], 20.5, 31), { type: "manual", now: at(1, "09:20"), applied: { heat: 21.5 } }, { type: "tick", now: at(1, "09:30") }]).outs);
+    expect(o.released.heat).toBe(true);
+    expect(o.heat).toBe(house.setback.heat);
+  });
+  it("nobody is stranded: the air does what it can, then the device takes over (14 °C room, 15 °C out, band 18)", () => {
+    const cfg = { ...house, seed: { blocks: [{ start: "00:00", heat: 18, cool: 22 }] } };
+    let r = drive(base(["u1"], 14, 15), cfg).last;
+    expect(r.output.released.heat).toBe(true); // the air is warming the room for free
+    r = step(r.state, { type: "reading", now: at(1, "10:00"), tin: 14.95, equip: "idle" }, cfg);
+    expect(r.output.released.heat).toBe(false); // caught up with the air, still outside the band: heat
+    expect(r.output.heat).toBeGreaterThanOrEqual(17.8); // the edge, less an hour of risk
+    // with the air inside the band, the room resting at the air's temperature is fine: stays released
+    r = drive(base(["u1"], 14, 19), cfg).last;
+    r = step(r.state, { type: "reading", now: at(1, "10:00"), tin: 18.95, equip: "idle" }, cfg);
+    expect(r.output.released.heat).toBe(true);
   });
   it("stale or missing weather releases nothing", () => {
     const o = lastOf(drive([...base(["u1"], 20.5, 31), { type: "tick", now: at(1, "13:00") }]).outs);
@@ -248,13 +287,17 @@ describe("output rules (§7.8)", () => {
     expect(lastOf(drive(base(["u1"], 18, 10), cfg).outs).mode).toBe("heat");
     expect(lastOf(drive(base(["u1"], 22, 30), cfg).outs).mode).toBe("cool");
     expect(lastOf(drive(base(["u1"], 22, 10), cfg).outs).mode).toBe("heat");
+    // inside the band with the outdoor air jittering around the room: the mode keeps its side
+    let r = drive(base(["u1"], 22, 22.1), cfg).last;
+    const m0 = r.output.mode;
+    for (let i = 0; i < 6; i++) { r = step(r.state, { type: "weather", now: at(1, `10:${String(i * 5 + 5).padStart(2, "0")}`), out: i % 2 ? 21.9 : 22.1 }, cfg); expect(r.output.mode).toBe(m0); }
   });
   it("freeze stops learning and risk but votes still nudge", () => {
     const { s, last } = drive([...base(), { type: "freeze", now: at(1, "09:10"), on: true }, { type: "vote", now: at(1, "09:20"), user: "u1", dir: "hot" }, { type: "tick", now: at(1, "13:00") }]);
     expect(s.models.u1.b0.n).toBe(0);
     expect(s.risk.cool).toBe(0);
     expect(last.output.state).toBe("FROZEN");
-    expect(last.output.nudge.cool).toBeGreaterThan(0);
+    expect(last.output.nudge.cool).not.toBeNull();
   });
 });
 

@@ -216,23 +216,27 @@
       "type": "object",
       "required": [
         "heat",
-        "cool",
-        "blockId"
+        "cool"
       ],
+      "additionalProperties": false,
       "properties": {
         "heat": {
-          "type": "number"
-        },
-        "cool": {
-          "type": "number"
-        },
-        "blockId": {
           "oneOf": [
             {
               "type": "null"
             },
             {
-              "type": "string"
+              "type": "number"
+            }
+          ]
+        },
+        "cool": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
             }
           ]
         }

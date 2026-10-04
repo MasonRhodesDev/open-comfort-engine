@@ -83,7 +83,9 @@ the same rule.
   The engine needs no timezone database. Hosts MUST send local offsets.
 - Events MUST be fed in non-decreasing `now` order. An event older than the
   last processed event MUST be rejected (no state change, `effects.records`
-  contains one `{type:"rejected", reason:"time"}` record).
+  contains one `{type:"rejected", reason:"time"}` record). A `reading` whose
+  `tin`, or a `weather` whose `out`, is not a finite number MUST be rejected
+  the same way with `reason:"value"`.
 - Floating point: IEEE-754 binary64. Conformance compares numbers with the
   tolerances in `CONFORMANCE.md`. Setpoints are rounded to the device setpoint
   step (§3.1) **inward** (`floor` for the `cool` side, `ceil` for `heat`,
@@ -203,7 +205,7 @@ rejected with a `{type:"rejected", reason:"type"}` record.
 - `reading` — last `{tin, rh, equip, applied, at}`.
 - `weather` — last `{out, high, low, at}`.
 - `risk` — per side `{heat, cool}` ∈ [0,1]; `paused` — per side, until when a complaint holds (§7.3).
-- `nudge` — per side inward offsets `{heat, cool}` ≥ 0 and `blockId` (§7.2).
+- `nudge` — per side `{heat, cool}`: the value a felt vote pinned the edge to, or null (§7.2).
 - `released` — per side booleans `{heat, cool}` (§7.4).
 - `frozen` — boolean.
 - `protecting` — `"max"`, `"min"` or null (§7.6).
@@ -331,9 +333,10 @@ edge[side]  = σ · min_u ( σ · edge_u )                      # the most sensi
 ```
 
 So the band is the intersection of everyone's accepted range. Risk widens it
-symmetrically; that is equivalent to widening only toward the outdoor air,
-because the side the outdoor air pushes the room away from is released
-anyway (§7.4) and its edge has no effect.
+on both sides. Only the side the outdoor air pushes the room toward can cost
+energy; the other side is usually released (§7.4), and when it is not (the air
+is within `natureMargin` of the room, or the side is paused) widening it is
+still harmless, because the room is not heading there.
 
 With nobody present the band is `setback`. (A side that has no present user
 contributing, e.g. `FROZEN` with nobody home, uses `setback` too.)
@@ -346,11 +349,16 @@ the device responds right away:
 
 ```
 target        = tin − σ · M_u.step
-nudge[side]   = clamp( max( nudge[side], σ·(edge[side] − target) ), 0, nudgeMax )     # inward offset
+nudge[side]   = inner( nudge[side] ?? target, target )          # the edge is pinned here for the rest of the block
+nudge[side]   = inner( nudge[side], edge[side] + σ·nudgeMax )   # never more than nudgeMax inward of the band
 ```
 
-where `edge[side]` is the band edge after learning. `nudge` is cleared when the
-block changes. The user's `step` halves on a direction reversal (floor
+where `edge[side]` is the band edge after learning and `inner` picks the value
+closer to the middle of the band. `nudge` is cleared when the block changes and
+when the set of present users changes (a nudge belongs to the people who asked
+for it). A vote from a user the host does not list as present updates that
+user's model but does not nudge, pause or reset risk (`feedback =
+noted.absent`): the room is not theirs to move. The user's `step` halves on a direction reversal (floor
 `stepMin`) and grows by `stepGrow` on a repeated same-direction vote within
 `repeatWindowMin` (cap `stepMax`). A vote within `cooldownMin` of the user's
 previous vote nudges only if the room is **stalled**: `responseMin` has passed
@@ -358,16 +366,19 @@ and `|tin − lastVote.tin| < stallDelta`; otherwise `feedback = noted.cooldown`
 Feedback for a felt vote is `nudge.cooler` (`cool` side) / `nudge.warmer`.
 
 `manual{applied}`: for each side whose `applied` value moved inward of the
-engine's last output, treat as a vote on that side from every present user
-with weight `manualWeight` (§6.2), with `target = applied[side]` instead of
-`tin − σ·step`; a side that moved outward or did not move is ignored.
+engine's last output, apply the vote likelihood on that side for every present
+user with weight `manualWeight` (§6.2) and pin the edge with `target =
+applied[side]`. A manual change is **not** a complaint: no cooldown, no step
+change, no `lastVote`, no risk reset or pause (§7.3), so it never un-releases a
+side (§7.4). A side that moved outward or did not move is ignored.
 
 ### 7.3 Risk (learn)
 
 `risk[side] ∈ [0,1]` is how far into the uncertain part of people's accepted
-range the band extends. Per elapsed hour `dtH` (§5.3 step 5), while users are
-present, awake (§3.4), the zone is not `FROZEN` and the side is not paused
-(`paused[side]` is null or ≤ `now`):
+range the band extends. Per elapsed hour `dtH` (§5.3 step 5; the elapsed time
+starts no earlier than `presence.since`, so nothing accrues before anyone is
+present), while users are present, awake (§3.4), the zone is not `FROZEN` and
+the side is not paused (`paused[side]` is null or ≤ `now`):
 
 ```
 risk[side] ← min(1, risk[side] + riskRate · (1 + costWeight · cost) · dtH)
@@ -381,14 +392,25 @@ vacancy; it is frozen in place while asleep or `FROZEN`.
 ### 7.4 Nature (release)
 
 The outdoor air pushes the room along the vector `out − tin`. A side the room
-is being pushed **away from** has nothing to do: it is released to `setback`.
-With hysteresis so the thermostat is not rewritten around the crossing:
+is being pushed **away from** has nothing to do: it is released to `setback`
+and the air does the work. It is taken back when the air pushes the other way,
+or when the room has caught up with the air and that was not enough to reach
+the band. With `push = σ·(out − tin)` (negative: the air pushes the room away
+from this edge) and `reach = σ·(edge − out)` (negative: the outdoor temperature
+is outside this edge):
 
 ```
-released[side] ← true   when  σ·(out − tin) ≤ −natureMargin
-released[side] ← false  when  σ·(out − tin) ≥ 0, or out is unknown (older than 3 h), or the side is paused (§7.3)
+released[side] ← true   when  push ≤ −natureMargin
+released[side] ← false  when  push ≥ +natureMargin,                 # the air now pushes the other way
+                        or (push ≥ −natureMargin/2 and reach < 0),  # the room caught up (it only ever approaches the air); the air could not reach the band
+                        or out is unknown (older than 3 h), or the side is paused (§7.3)
 if released[side]: setpoint[side] = setback[side]
 ```
+
+Between the thresholds nothing changes, so an outdoor reading jittering around
+the room temperature cannot flap a side; and a room is never left resting
+outside the band when the air cannot bring it in — the device takes over as
+soon as the air has done what it can.
 
 A complaint on a side un-releases it for `riskPauseMin` — the person is
 uncomfortable now and the outdoor air is too slow. Protection (§7.6) also overrides release.
@@ -444,16 +466,17 @@ silence, manual), no forgetting, risk frozen in place, no structure changes
 ```
 for each side:
   edge      = §7.1 band edge (setback if nobody present)
-  edge      = edge − σ·nudge[side]                     # §7.2
+  edge      = inner(edge, nudge[side]) if nudge[side] is set   # §7.2
   edge      = pre-conditioned                          # §7.5
   setpoint  = released ? setback[side] : edge          # §7.4
   setpoint  = clamped to capabilities[side], rounded inward to setpointStep (§2)
-if cool − heat < minGap: keep the side with an active nudge if exactly one has it, else the side the
+if cool − heat < minGap: keep the side with a pinned nudge if exactly one has it, else the side the
                          room is pushed toward (`cool` if out > tin, else `heat`); the other side moves
                          outward to restore the gap; re-clamp
 for each side: setpoint = protection clamp (§7.6), rounded inward; if that breaks the gap the other side gives way
 mode = "auto" if supported;
        else the side the room is outside of (tin past that setpoint, not released) if supported;
+       else the previous output's mode if it is a side that is not released (hysteresis);
        else the side opposing the outdoor air (out > tin → "cool", else "heat") if supported;
        else the first supported mode
 ```
@@ -463,7 +486,7 @@ Output object:
 ```
 { heat, cool, mode, state, block: b.id, blockEnd (RFC 3339: start of the next block),
   band: { heat, cool },                      # before release and protection
-  released: { heat, cool }, risk: { heat, cool }, nudge: { heat, cool },
+  released: { heat, cool }, risk: { heat, cool }, nudge: { heat, cool }   # pinned values or null,
   reasons: [string], confidence, protect }
 ```
 
@@ -591,7 +614,7 @@ Record types (all include `at` = `now` and `zone` = config `id`):
 | `rejected` | §2, §4 | `reason, event type` |
 
 Feedback codes (hosts render words, never numbers): `nudge.cooler`,
-`nudge.warmer`, `noted.cooldown`, `noted.no_reading`.
+`nudge.warmer`, `noted.cooldown`, `noted.absent`, `noted.no_reading`.
 
 ## Appendix A — Φ
 
