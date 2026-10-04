@@ -7,7 +7,7 @@ export { knots } from "./model";
 export { phi, erfc } from "./math";
 export { parseWhen, formatWhen } from "./time";
 
-export const SPEC_VERSION = "0.5.0-rc.2";
+export const SPEC_VERSION = "0.5.0-rc.3";
 
 /** °F <-> °C helpers for hosts; the engine itself is °C only. */
 export const fToC = (f: number): number => ((f - 32) * 5) / 9;

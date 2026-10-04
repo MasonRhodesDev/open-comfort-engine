@@ -327,7 +327,17 @@ describe("state machine (§5, §9)", () => {
     expect(r.snapshotVersion).toBe(3);
     expect(r.reading!.tin).toBe(23);
     expect(r.curve).toEqual(init(house).curve);
+    expect(r.lastEventAt).toBeNull(); // history (a vote replay) is accepted again
     expect(() => step(r, { type: "tick", now: at(1, "10:00") }, house)).not.toThrow();
+    // a v3 snapshot built with other knot parameters restarts the same way, through a restore event
+    const other = { ...house, params: { knotStep: 10 } };
+    const s3 = drive([...base(24.2), { type: "vote", now: at(1, "09:20"), user: "u1", dir: "hot" }]).s;
+    const rr = step(init(other), { type: "restore", now: at(1, "12:00"), snapshot: s3 }, other);
+    expect(rr.effects.records.some((x) => x.type === "rejected")).toBe(false);
+    expect(rr.state.curve.cool.length).toBe(6);
+    expect(rr.state.lastEventAt).toBeNull();
+    const bad = step(init(house), { type: "restore", now: at(1, "12:00"), snapshot: { snapshotVersion: 9 } as any }, house);
+    expect(bad.effects.records[0]).toMatchObject({ type: "rejected", reason: "snapshot" });
   });
   it("step() does not mutate its input state", () => {
     const s0 = init(house);

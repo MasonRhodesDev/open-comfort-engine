@@ -1,6 +1,6 @@
 # Open Comfort Engine — Specification
 
-Version: **0.5.0-rc.2** (release candidate)
+Version: **0.5.0-rc.3** (release candidate)
 Status: normative. The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are
 to be interpreted as described in RFC 2119.
 
@@ -526,9 +526,10 @@ The snapshot is the complete state as JSON
 `snapshotVersion: 3`. `restore{snapshot}` MUST accept any version ≤ the
 implementation's and migrate it; unknown higher versions MUST be rejected.
 Migrating a version-1 or version-2 snapshot keeps `reading`, `weather`,
-`frozen`, `protecting` and `lastEventAt` and starts everything else fresh;
-hosts that kept vote records SHOULD replay them (as `weather` + `reading` +
-`vote` events at their original times) so the curve starts from real data.
+`frozen`, `protecting` and `voters` and starts everything else fresh, with
+`lastEventAt` cleared so that older events are accepted again; hosts that
+kept vote records SHOULD replay them (as `weather` + `reading` + `vote`
+events at their original times) so the curve starts from real data.
 
 Migrating also happens when a version-3 snapshot was built with other grid or
 knot parameters (its `seedKey` differs): the curve and thermal model restart.

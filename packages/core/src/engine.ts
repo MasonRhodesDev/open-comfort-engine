@@ -80,9 +80,11 @@ export function restore(snapshot: Snapshot, config?: ZoneConfig): State {
   if (!config) throw new Error("restoring a version " + v + " snapshot needs the zone config");
   const old = snapshot as unknown as Record<string, unknown>;
   const s = init(config);
-  for (const k of ["reading", "weather", "frozen", "protecting", "lastEventAt", "voters"] as const) {
+  for (const k of ["reading", "weather", "frozen", "protecting", "voters"] as const) {
     if (old[k] !== undefined) (s as unknown as Record<string, unknown>)[k] = JSON.parse(JSON.stringify(old[k]));
   }
+  // a restarted curve accepts history again: hosts replay their vote records at their original times (§9)
+  s.lastEventAt = null;
   return s;
 }
 
