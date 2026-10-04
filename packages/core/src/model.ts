@@ -1,6 +1,6 @@
 // §6 — the tolerance curve: for each side, a posterior over the indoor edge at every
 // outdoor-temperature knot. One curve per zone; no identity, no time of day.
-import type { CurvePoint, Knot, Params, PerSide } from "./types";
+import type { CurvePoint, Knot, Params, PerSide, ThermalCurve } from "./types";
 import { COOL, HEAT, type Side } from "./side";
 import { clamp, forget, gaussianPrior, meanSigma, phi, phiInv, quantile, update } from "./math";
 
@@ -92,13 +92,14 @@ export function votesAt(gr: Grid, curve: PerSide<Knot[]>, side: Side, out: numbe
   return v;
 }
 
-/** §7.8 the curve for graphs: the safe edge and spread at every knot. */
-export function curvePoints(gr: Grid, curve: PerSide<Knot[]>): CurvePoint[] {
+/** §7.8 the curve for graphs: the safe edge, spread and thermal response at every knot. */
+export function curvePoints(gr: Grid, curve: PerSide<Knot[]>, th: ThermalCurve): CurvePoint[] {
   return knots(gr.p).map((out, i) => ({
     out,
     heat: knotQuantile(gr, curve.heat[i], HEAT, gr.p.qSafe),
     cool: knotQuantile(gr, curve.cool[i], COOL, gr.p.qSafe),
     heatSigma: meanSigma(gr.g, curve.heat[i].w).sigma,
     coolSigma: meanSigma(gr.g, curve.cool[i].w).sigma,
+    thermal: { envelope: th.envelope[i], heat: th.heat[i], cool: th.cool[i] },
   }));
 }

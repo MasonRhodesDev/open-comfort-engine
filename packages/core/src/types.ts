@@ -120,15 +120,24 @@ export interface CurvePoint {
   cool: number;
   heatSigma: number;
   coolSigma: number;
+  /** the thermal response at this knot */
+  thermal: Thermal;
 }
 
-/** §2b the learned thermal response */
+/** §6.5 the thermal response at one outdoor temperature */
 export interface Thermal {
   /** 1/h: idle rate of change per °C of (out − tin) */
   envelope: number;
   /** °C/h the equipment adds on each side, net of the envelope */
   heat: number;
   cool: number;
+}
+
+/** §6.5 the learned thermal response: one value per outdoor-temperature knot (the curve's knots) */
+export interface ThermalCurve {
+  envelope: number[];
+  heat: number[];
+  cool: number[];
 }
 
 /** §7.8 */
@@ -146,6 +155,7 @@ export interface Output {
   confidence: PerSide<number>;
   /** band − out; null without an outdoor temperature */
   deltaFromAmbient: PerSide<number | null>;
+  /** the thermal response at the current outdoor temperature */
   thermal: Thermal;
   curve: CurvePoint[];
   /** §7.6: the room is beyond a protection limit; hosts MUST actuate toward the output */
@@ -211,7 +221,7 @@ export interface Snapshot {
   released: PerSide<boolean>;
   frozen: boolean;
   protecting: "max" | "min" | null;
-  thermal: Thermal;
+  thermal: ThermalCurve;
   lastOutput: Output | null;
   lastEventAt: number | null;
   lastSnapshotAt: number | null;

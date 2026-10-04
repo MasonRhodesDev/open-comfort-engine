@@ -15,7 +15,6 @@ import {
   State,
   StateName,
   StepResult,
-  Thermal,
   ZoneConfig,
 } from "./types";
 import { clamp, grid, roundInward } from "./math";
@@ -23,7 +22,7 @@ import { MIN, parseWhen, When } from "./time";
 import { Ctx, params } from "./ctx";
 import { COOL, HEAT, SIDES, Side, inner, inwardOf, perSide, sideForVote, sideOf } from "./side";
 import { confidenceAt, curvePoints, edgeAt, newCurve, observeSilence, observeVote, sigmaAt, votesAt, type Grid } from "./model";
-import { expectedChange, newThermal, observeInterval } from "./thermal";
+import { expectedChange, newThermal, observeInterval, thermalAt } from "./thermal";
 
 export { params };
 
@@ -252,8 +251,8 @@ function computeOutput(ctx: Ctx): Output {
     reasons,
     confidence: perSide((side) => confidenceAt(ctx, s.curve, side, outBand)),
     deltaFromAmbient: perSide((side) => (o === null ? null : a.band[side.key] - o)),
-    thermal: { ...s.thermal },
-    curve: curvePoints(ctx, s.curve),
+    thermal: thermalAt(s.thermal, ctx.p, outBand),
+    curve: curvePoints(ctx, s.curve, s.thermal),
     protect: a.protecting,
   };
 }
@@ -271,7 +270,7 @@ function pushTo(ctx: Ctx, side: Side, target: number) {
 /** §6.3 exploration weight for a side right now: decays with confidence, scales with the zone's ability to correct. */
 function explorationWeight(ctx: Ctx, side: Side, out: number): number {
   const p = ctx.p;
-  const canCorrect = clamp((ctx.s.thermal[side.key] * (p.silenceEveryMin / 60)) / p.silenceSigma, 0, 1);
+  const canCorrect = clamp((thermalAt(ctx.s.thermal, p, out)[side.key] * (p.silenceEveryMin / 60)) / p.silenceSigma, 0, 1);
   return p.silenceWeight * (1 - confidenceAt(ctx, ctx.s.curve, side, out)) * canCorrect;
 }
 
@@ -314,7 +313,7 @@ function onVote(ctx: Ctx, ev: Extract<EngineEvent, { type: "vote" }>) {
     if (last && t - last.at < p.cooldownMin * MIN) {
       // §4: inside the cooldown a repeat counts only if the room is stalled — it moved less than the
       // equipment should have moved it since the last vote
-      const expected = Math.abs(expectedChange(s.thermal, (t - last.at) / 3600000, 0, side.key));
+      const expected = Math.abs(expectedChange(s.thermal, p, out, (t - last.at) / 3600000, 0, side.key));
       const moved = inwardOf(side, last.tin, r.tin); // > 0 when the room moved inward since the last vote
       if (moved >= 0.5 * expected && expected > 1e-9) pushed = false;
     }
@@ -365,7 +364,7 @@ function onReading(ctx: Ctx, ev: Extract<EngineEvent, { type: "reading" }>) {
   // equipment has been doing since that reading
   if (prev && s.weather) {
     const dtMin = (t - prev.at) / MIN;
-    if (dtMin >= 1 && dtMin <= 30) observeInterval(s.thermal, ctx.p, dtMin / 60, ev.tin - prev.tin, s.weather.out - prev.tin, ev.equip ?? null);
+    if (dtMin >= 1 && dtMin <= 30) observeInterval(s.thermal, ctx.p, s.weather.out, dtMin / 60, ev.tin - prev.tin, s.weather.out - prev.tin, ev.equip ?? null);
   }
   s.reading = { tin: ev.tin, rh: ev.rh ?? null, equip: ev.equip ?? null, applied: ev.applied ?? null, at: t };
 }
@@ -474,6 +473,7 @@ function reject(state: State, config: ZoneConfig, nowStr: string, reason: string
 
 function emptyOutput(state: State, config: ZoneConfig): Output {
   const gr = gridOf(config);
+  const mid = (gr.p.knotMin + gr.p.knotMax) / 2;
   return {
     heat: config.seed.heat,
     cool: config.seed.cool,
@@ -485,8 +485,8 @@ function emptyOutput(state: State, config: ZoneConfig): Output {
     reasons: ["seed"],
     confidence: { heat: 0, cool: 0 },
     deltaFromAmbient: { heat: null, cool: null },
-    thermal: { ...state.thermal },
-    curve: curvePoints(gr, state.curve),
+    thermal: thermalAt(state.thermal, gr.p, mid),
+    curve: curvePoints(gr, state.curve, state.thermal),
     protect: null,
   };
 }
@@ -504,7 +504,7 @@ export interface ProjectionDay {
  * and where the room is expected to be, from the learned curve and thermal response. Pure. */
 export function project(state: State, config: ZoneConfig, day: ProjectionDay): ProjectedHour[] {
   const gr = gridOf(config);
-  const th: Thermal = state.thermal;
+  const th = state.thermal;
   let tin = day.tin;
   let released: PerSide<boolean> = { ...state.released };
   let protecting = state.protecting;
@@ -531,7 +531,7 @@ export function project(state: State, config: ZoneConfig, day: ProjectionDay): P
       // clamping it, since hosts MUST actuate then (§7.6)
       const side = SIDES.find((sd) => (!released[sd.key] || protecting === sd.limit) && inwardOf(sd, sd.key === "heat" ? a.heat : a.cool, tin) < 0 && (a.mode === "auto" || a.mode === sd.key)) ?? null;
       const equip: Equip | null = side ? side.key : null;
-      tin += expectedChange(th, dt, out - tin, equip);
+      tin += expectedChange(th, gr.p, out, dt, out - tin, equip);
       if (side) { runMin += dt * 60; equipment = side.key; }
     }
     rows.push({ now, out, tin: Math.round(tin0 * 100) / 100, band: a.band, heat: a.heat, cool: a.cool, released: { ...released }, equipment, runMin: Math.round(runMin), deltaFromAmbient: perSide((sd) => a.band[sd.key] - out) });

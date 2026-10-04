@@ -23,8 +23,8 @@ export interface SimOptions {
   seed?: number;
   /** outdoor temperature at a given day/hour */
   outdoor: (day: number, hour: number) => number;
-  /** true room physics: envelope coupling (1/h) and equipment rate (°C/h) */
-  thermal: { envelope: number; equipment: number };
+  /** true room physics: envelope coupling (1/h) and equipment rate (°C/h), the latter possibly a function of outdoor temperature */
+  thermal: { envelope: number; equipment: number | ((out: number) => number) };
   freezeAfterDay?: number;
   /** the host feeds the engine only while someone is home (default true) */
   hostPresence?: boolean;
@@ -92,9 +92,10 @@ export function simulate(o: SimOptions): { stats: DayStats[]; state: State; last
       const cool = attended && out ? out.cool : o.config.setback.cool;
       let equip: "heat" | "cool" | "idle" = "idle";
       const dt = 5 / 60;
+      const eq = typeof o.thermal.equipment === "function" ? o.thermal.equipment(outT) : o.thermal.equipment;
       let rate = o.thermal.envelope * (outT - tin);
-      if (tin > cool) { rate -= o.thermal.equipment; equip = "cool"; }
-      else if (tin < heat) { rate += o.thermal.equipment; equip = "heat"; }
+      if (tin > cool) { rate -= eq; equip = "cool"; }
+      else if (tin < heat) { rate += eq; equip = "heat"; }
       tin += rate * dt;
       if (equip !== "idle") ds.hvacMin += 5;
       if (attended) {

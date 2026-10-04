@@ -27,7 +27,8 @@ export function household(days: number, extra: Partial<SimOptions> = {}): SimOpt
     users: houseUsers(),
     days,
     outdoor: summerOutdoor,
-    thermal: { envelope: 0.15, equipment: 3.0 }, // a house: slow, but the equipment can hold it on a hot day
+    // a house: slow, but the equipment can hold it on a hot day; the AC loses capacity as it gets hotter out
+    thermal: { envelope: 0.15, equipment: (out) => 3.0 - Math.max(0, out - 25) * 0.05 },
     ...extra,
   };
 }
@@ -38,7 +39,7 @@ export function officeHousehold(days: number, extra: Partial<SimOptions> = {}): 
     users: [{ uid: "m", voteRate: 2, home: [[9, 16], [20, 22]], range: (out) => [18.5 + bend(out), 25.0 + bend(out)] }],
     days,
     outdoor: summerOutdoor,
-    thermal: { envelope: 0.6, equipment: 8 }, // a small office: fast both ways
+    thermal: { envelope: 0.6, equipment: (out) => 8 - Math.max(0, out - 25) * 0.15 }, // a small office: fast both ways; the window unit fades in the heat
     ...extra,
   };
 }

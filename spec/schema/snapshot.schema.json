@@ -391,13 +391,22 @@
       ],
       "properties": {
         "envelope": {
-          "type": "number"
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
         },
         "heat": {
-          "type": "number"
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
         },
         "cool": {
-          "type": "number"
+          "type": "array",
+          "items": {
+            "type": "number"
+          }
         }
       }
     },

@@ -193,7 +193,8 @@
           "heat",
           "cool",
           "heatSigma",
-          "coolSigma"
+          "coolSigma",
+          "thermal"
         ],
         "properties": {
           "out": {
@@ -210,6 +211,25 @@
           },
           "coolSigma": {
             "type": "number"
+          },
+          "thermal": {
+            "type": "object",
+            "required": [
+              "envelope",
+              "heat",
+              "cool"
+            ],
+            "properties": {
+              "envelope": {
+                "type": "number"
+              },
+              "heat": {
+                "type": "number"
+              },
+              "cool": {
+                "type": "number"
+              }
+            }
           }
         }
       }

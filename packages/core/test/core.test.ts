@@ -216,9 +216,10 @@ describe("thermal response (§2b)", () => {
     let m = 0;
     for (; m < 120; m += 10) { evs.push({ type: "reading", now: at(1, `${9 + Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}`), tin: Math.round(tin * 100) / 100, equip: "idle" }); tin += 0.5 * (30 - tin) * (10 / 60); }
     for (; m < 240; m += 10) { evs.push({ type: "reading", now: at(1, `${9 + Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}`), tin: Math.round(tin * 100) / 100, equip: "cool" }); tin += (0.5 * (30 - tin) - 3) * (10 / 60); }
-    const { s } = drive(evs);
-    expect(s.thermal.envelope).toBeGreaterThan(0.38); // moving from the 0.3 prior toward 0.5
-    expect(s.thermal.cool).toBeGreaterThan(2.2); // moving from the 2.0 prior toward 3 at thermalForget per interval
+    const { s, outs } = drive(evs);
+    expect(lastOf(outs).thermal.envelope).toBeGreaterThan(0.38); // at 30 °C out: moving from the 0.3 prior toward 0.5
+    expect(lastOf(outs).thermal.cool).toBeGreaterThan(2.2); // moving from the 2.0 prior toward 3 at thermalForget per interval
+    expect(s.thermal.cool[0]).toBe(2.0); // the −10 °C knot saw nothing
   });
 });
 

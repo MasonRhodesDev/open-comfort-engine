@@ -189,7 +189,7 @@ rejected with a `{type:"rejected", reason:"type"}` record.
 - `complaintAt` — per side, when the last complaint was made (§7.4, §7.8).
 - `released` — per side booleans (§7.4).
 - `frozen` — boolean. `protecting` — `"max"`, `"min"` or null (§7.6).
-- `thermal` — `{envelope, heat, cool}`, the learned thermal response (§6.5).
+- `thermal` — `{envelope[], heat[], cool[]}`, the learned thermal response per knot (§6.5).
 - `lastOutput`, `lastEventAt`, `lastSnapshotAt`.
 
 ### 5.2 States
@@ -308,26 +308,33 @@ After every vote or manual update, on the updated knots:
 ### 6.5 Thermal response
 
 The zone's physics, learned from consecutive readings 1–30 min apart with the
-outdoor temperature known, as a first-order model with the equipment on top:
+outdoor temperature known. The rate of change is variable, so it is learned
+as a **curve over outdoor temperature** on the same knots as the tolerance
+curve — the envelope coupling and each side's equipment rate per knot,
+interpolated like the curve (§6.1) and started from the priors:
 
 ```
-idle:     dtin/dt = envelope · (out − tin)                         # envelope: 1/h
-running:  dtin/dt = envelope · (out − tin) − σ · equipment[side]    # equipment: °C/h, net of the envelope
+idle:     dtin/dt = envelope(out) · (out − tin)                          # envelope: 1/h
+running:  dtin/dt = envelope(out) · (out − tin) − σ · equipment[side](out)  # equipment: °C/h, net of the envelope
 ```
 
 `reading.equip` says what the equipment has been doing **since the previous
 reading**, so the interval it closes is attributed to it. Per interval of
-`dtH` hours with `rate = Δtin/dtH` and `delta = out − tin_previous`:
+`dtH` hours at outdoor `out`, with `rate = Δtin/dtH` and
+`delta = out − tin_previous`, each of the two knots around `out` is updated
+with forgetting `f = thermalForget · wt` (`wt` its interpolation weight):
 
 - idle (or `fan`/`off`/unknown): if `|delta| ≥ 1`,
-  `envelope ← (1 − thermalForget)·envelope + thermalForget·clamp(rate/delta, 0, 5)`;
-- running on a side: `equipment[side] ← (1 − thermalForget)·equipment[side] +
-  thermalForget·clamp(σ·(envelope·delta − rate), 0, 20)`.
+  `envelope_k ← (1 − f)·envelope_k + f·clamp(rate/delta, 0, 5)`;
+- running on a side: `equipment[side]_k ← (1 − f)·equipment[side]_k +
+  f·clamp(σ·(envelope_k·delta − rate), 0, 20)`.
 
-The rate of change is therefore derived from the delta from ambient. The
-model is used for stall detection (§7.3), the projection (§7.9) and the
-exploration weight (§6.3), and reported to hosts for their own
-pre-conditioning.
+So the rate of change is derived from the delta from ambient, and an
+equipment whose capacity fades in the heat (a heat pump, a window unit) is
+seen as such. The model is used for stall detection (§7.3), the projection
+(§7.9) and the exploration weight (§6.3), and reported to hosts at the
+current outdoor temperature (`output.thermal`) and per knot
+(`output.curve[].thermal`) for their own pre-conditioning and for graphs.
 
 ## 7. Control (the loop)
 
@@ -471,8 +478,8 @@ Output object:
   released: { heat, cool }, push: { heat, cool },   # the faded push edges or null (§7.2)
   reasons: [string], confidence: { heat, cool },
   deltaFromAmbient: { heat, cool },          # band − out, or null without weather
-  thermal: { envelope, heat, cool },          # §6.5
-  curve: [ { out, heat, cool, heatSigma, coolSigma } … ],   # the safe edges and spreads at every knot
+  thermal: { envelope, heat, cool },          # §6.5, at this outdoor temperature
+  curve: [ { out, heat, cool, heatSigma, coolSigma, thermal } … ],   # the safe edges, spreads and thermal response at every knot
   protect }
 ```
 
