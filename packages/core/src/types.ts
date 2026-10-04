@@ -52,6 +52,7 @@ export interface Params {
   cooldownMin: number;
   repeatWindowMin: number;
   natureMargin: number;
+  releaseDwellMin: number;
   complaintMin: number;
   envelopePrior: number;
   equipmentPrior: number;
@@ -85,6 +86,7 @@ export const DEFAULT_PARAMS: Params = {
   cooldownMin: 30,
   repeatWindowMin: 120,
   natureMargin: 1.0,
+  releaseDwellMin: 30,
   complaintMin: 120,
   envelopePrior: 0.3,
   equipmentPrior: 2.0,
@@ -207,18 +209,21 @@ export interface Voter {
 export interface Snapshot {
   snapshotVersion: 3;
   zone: string;
+  /** the seed and the grid/knot parameters the curve was built with; a change restarts it (§3.2, §9) */
   seedKey: string;
   /** §6.1 the tolerance curve: one knot per outdoor temperature, per side */
   curve: PerSide<Knot[]>;
   voters: Record<string, Voter>;
   reading: { tin: number; rh: number | null; equip: Equip | null; applied: Applied | null; at: number } | null;
   weather: { out: number; high: number | null; low: number | null; at: number } | null;
-  /** §6.3 the attended quiet streak: when it started, and when silence was last counted */
-  quiet: { since: number | null; lastAt: number | null };
+  /** §6.3 the attended quiet streak: when silence was last counted */
+  quiet: { lastAt: number | null };
   /** §4 the felt edge a push set, and when; it fades back into the learned edge over complaintMin of quiet */
   push: PerSide<{ at: number; edge: number } | null>;
   complaintAt: PerSide<number | null>;
   released: PerSide<boolean>;
+  /** §7.4 when each side's release state last changed (dwell) */
+  releasedAt: PerSide<number | null>;
   frozen: boolean;
   protecting: "max" | "min" | null;
   thermal: ThermalCurve;

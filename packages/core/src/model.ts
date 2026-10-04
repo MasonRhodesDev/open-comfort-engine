@@ -59,7 +59,12 @@ export function observeSilence(gr: Grid, curve: PerSide<Knot[]>, side: Side, out
   for (const { i, w } of around(p, out)) {
     const k = curve[side.key][i];
     const s = clamp(weight * w, 0, 1);
-    k.w = update(k.w, (j) => 1 - s + s * phi((side.sign * (g[j] - tin)) / p.silenceSigma));
+    // quiet says nothing about an edge the room is nowhere near: exactly 1 more than 2·silenceSigma inside,
+    // so a far edge is never walked outward by it
+    k.w = update(k.w, (j) => {
+      const z = (side.sign * (g[j] - tin)) / p.silenceSigma;
+      return z >= 2 ? 1 : 1 - s + s * phi(z);
+    });
   }
 }
 

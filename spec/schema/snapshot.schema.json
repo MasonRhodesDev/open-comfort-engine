@@ -15,6 +15,7 @@
     "push",
     "complaintAt",
     "released",
+    "releasedAt",
     "frozen",
     "protecting",
     "thermal",
@@ -264,20 +265,9 @@
     "quiet": {
       "type": "object",
       "required": [
-        "since",
         "lastAt"
       ],
       "properties": {
-        "since": {
-          "oneOf": [
-            {
-              "type": "null"
-            },
-            {
-              "type": "number"
-            }
-          ]
-        },
         "lastAt": {
           "oneOf": [
             {
@@ -439,6 +429,36 @@
           "type": "number"
         }
       ]
+    },
+    "releasedAt": {
+      "type": "object",
+      "required": [
+        "heat",
+        "cool"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "heat": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
+        "cool": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        }
+      }
     }
   }
 }

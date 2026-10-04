@@ -157,25 +157,38 @@ drift/risk/nudge state, the cost input, the PRNG. The spec went from 709 lines (
 549, with more defined.
 
 **What the simulators say** (two strict synthetic occupants whose true tolerance bends with
-outdoor temperature and who cannot vote 23:00–07:00; a slow house and a fast office; 42
-summer days; `npm run sim`):
+outdoor temperature and who cannot vote 23:00–07:00; a slow house and a fast office whose
+equipment loses capacity in the heat; 42 summer days; `npm run sim`; numbers at rc.2):
 
-- The thermal response is learned within a week: house envelope 0.155/h (true 0.15),
-  cooling 3.0 °C/h (true 3.0); office 0.57/h (0.6), 7.8 °C/h (8.0).
-- The curve bends the way the population does: house cooling edge 25.4 °C at 35 °C out
-  (true 25.5), 24.0 at 25 (true 24.1), 23.3 at 20 (true 23.1). Delta from ambient goes from
-  −10 on hot days to ≈ 0 in the temperate middle.
-- Against a programmed thermostat (the seed range, nothing learned, no release): the house
-  has a fifth of the discomfort at equal energy from week 3; the office saves 10–20 % HVAC
-  with some exploration cost (it is told to explore faster, by its own equipment rate).
-- A confident night band moves 0.05–0.2 °C per night with nobody able to vote; confidence
-  reaches ~0.55 after six weeks, so it will hold harder as the curve firms up.
-- Two findings the simulator forced before release: a push that never dissolved (a "too
-  hot" from day 2 pinned the ceiling for five weeks, because nobody votes "too cold" in a
-  room held at 22.5 °C) — now it fades; and the thermal estimator attributing an interval to
-  the equipment state at its start, which a cycling device mislabels — now `reading.equip`
-  means "since the previous reading".
-- The permutation sweep (390 cases + outdoor swings) found one thing worth fixing: a band
-  sliding by hundredths as outdoor moves toggled the setpoint on a rounding boundary. The
-  output now has a trigger band: a setpoint changes only once the wanted value is a full
-  step away — the engine outputs a range, never a target.
+- The thermal response is learned within a week, per outdoor knot: house cooling 3.0 °C/h at
+  the 25 °C knot and 2.6 at 35 (true 3.0 → 2.5), envelope 0.15/h; office 7.8 → 6.7 (true 8 → 6.5).
+- The curve bends the way the population does: house cooling edge 25.2 °C at 35 °C out (true
+  25.5), 23.7 at 25 (true 24.1); knots the population never spoke at stay at the seed.
+- Against a programmed thermostat (the seed range, nothing learned, no release), weeks 3–6:
+  **awake** discomfort −84 % at equal energy for the house; the office saves 20 % HVAC with
+  about twice the static schedule's (small) discomfort — its exploration cost.
+- **Sleepers.** Counting discomfort while asleep, the engine is *worse* than the static
+  schedule at night: 3375 vs 625 person-minutes over four weeks. Quiet nights teach the
+  cold-outdoor knots that 17 °C is accepted, because the only people there cannot complain, and
+  the wake-up vote at 07:00 lands on a warmer knot. The engine does exactly what it is told —
+  quiet is evidence — and only the host knows people are asleep. This is reported by the sim
+  and is the open decision for the owner: feed night-time quiet as evidence or not (host-side,
+  from a sleep signal), or accept it on the grounds that real sleepers tolerate a wider range
+  than the sim's occupants (sleep-comfort literature puts 18–22 °C as the good range).
+- Confidence plateaus at 0.6–0.7 after four months whatever the forgetting rate (0.02 /
+  0.005 / 0 give 0.61 / 0.65 / 0.69): votes are one-sided evidence, so an edge is never pinned
+  from both sides unless quiet does it. The night band moves 0.007 °C per night by month four
+  under all three. Forgetting stays at 0.02 for adaptation; "confidence reaches 1" is not a
+  claim this design makes.
+- Four things the adversarial review of rc.1 found and rc.2 fixed: release could strand a
+  slow zone for hours (now a side is released only while the air pushes the room away from
+  the edge *and* can bring it inside; otherwise the device takes it at once); quiet walked a
+  far edge outward forever (quiet now says nothing about an edge the room is nowhere near,
+  so cold knots stop creeping in summer); frozen hours were counted as quiet after unfreezing;
+  stall detection ignored the envelope. Plus: a 30-minute dwell on release changes (a
+  sun-struck outdoor sensor cannot cycle the equipment), learning only from a current
+  outdoor temperature, restore that rejects instead of throwing, CONVERGED defined so it can
+  happen, and the trigger band on the output (a setpoint changes only once the wanted value is
+  a full step away).
+- The permutation sweep (390 cases + outdoor swings): no inverted, fighting, both-in-one-hour,
+  flapping, leaking or stranded behaviour; 6 % less HVAC than the seed schedule.

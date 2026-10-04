@@ -39,10 +39,11 @@ export function observeInterval(th: ThermalCurve, p: Params, out: number, dtH: n
     const f = p.thermalForget * w;
     if (side === null) {
       if (Math.abs(delta) < 1) continue; // too close to outdoor to tell the coupling
-      th.envelope[i] = (1 - f) * th.envelope[i] + f * clamp(rate / delta, 0, 5);
+      // floors: a mislabelled interval (a stuck `equip`) can pull a rate down, never to zero, so it recovers
+      th.envelope[i] = (1 - f) * th.envelope[i] + f * clamp(rate / delta, 0.02, 5);
     } else {
       // the equipment's own contribution, net of what the envelope did on its own
-      th[side.key][i] = (1 - f) * th[side.key][i] + f * clamp(side.sign * (th.envelope[i] * delta - rate), 0, 20);
+      th[side.key][i] = (1 - f) * th[side.key][i] + f * clamp(side.sign * (th.envelope[i] * delta - rate), 0.1, 20);
     }
   }
 }

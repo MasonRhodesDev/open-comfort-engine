@@ -33,13 +33,14 @@ export interface SimOptions {
 export interface DayStats {
   day: number;
   votes: number;
-  uncomfortableMin: number; // person-minutes outside their true range while home and awake
+  uncomfortableMin: number; // person-minutes outside their true range while home (asleep or not: sleepers suffer too)
+  asleepUncomfortableMin: number; // the part of that while asleep (nobody could vote)
   hvacMin: number; // minutes the HVAC ran
   attendedMin: number; // minutes the engine was fed
   degreeHours: number; // Σ |out − 18| per hour, a weather normaliser
   bandWidth: number; // mean cool − heat while attended
   curveRms: PerSideNum | null; // RMS error of the learned edges vs the population's true ones, at the day's outdoor temps
-  nightDrift: number | null; // |Δ band.cool| over the night (23:00–07:00), when nobody can vote
+  nightDrift: number | null; // |Δ heat edge at a fixed outdoor temperature (the night knot)| over the night (23:00–07:00), when nobody can vote
   confidence: number; // mean cool-side confidence while attended
 }
 
@@ -78,7 +79,7 @@ export function simulate(o: SimOptions): { stats: DayStats[]; state: State; last
     return [lo, hi];
   };
   for (let d = 0; d < o.days; d++) {
-    const ds: DayStats = { day: d, votes: 0, uncomfortableMin: 0, hvacMin: 0, attendedMin: 0, degreeHours: 0, bandWidth: 0, curveRms: null, nightDrift: null, confidence: 0 };
+    const ds: DayStats = { day: d, votes: 0, uncomfortableMin: 0, asleepUncomfortableMin: 0, hvacMin: 0, attendedMin: 0, degreeHours: 0, bandWidth: 0, curveRms: null, nightDrift: null, confidence: 0 };
     let bandSum = 0, bandN = 0, rmsH = 0, rmsC = 0, rmsN = 0, confSum = 0;
     if (o.freezeAfterDay !== undefined && d === o.freezeAfterDay) feed({ type: "freeze", now: fmt(d, 0), on: true });
     for (let minute = 0; minute < 1440; minute += 5) {
@@ -104,14 +105,16 @@ export function simulate(o: SimOptions): { stats: DayStats[]; state: State; last
         feed({ type: "reading", now: fmt(d, minute), tin: Math.round(tin * 100) / 100, equip });
         if (out) { bandSum += out.band.cool - out.band.heat; bandN++; confSum += out.confidence.cool; const [lo, hi] = trueBand(outT, hour); rmsC += (out.band.cool - hi) ** 2; rmsH += (out.band.heat - lo) ** 2; rmsN++; }
       }
-      if (out && hour === 23 && minute % 60 === 0) night0 = out.band.cool;
-      if (out && night0 !== null && hour === 7 && minute % 60 === 0) { ds.nightDrift = Math.abs(out.band.cool - night0); night0 = null; }
+      const nightKnot = () => out!.curve.find((k) => k.out === 15)!.heat; // the curve itself, at a fixed outdoor knot: not confounded by the weather moving
+      if (out && hour === 23 && minute % 60 === 0) night0 = nightKnot();
+      if (out && night0 !== null && hour === 7 && minute % 60 === 0) { ds.nightDrift = Math.abs(nightKnot() - night0); night0 = null; }
       for (const u of home) {
         const [lo, hi] = u.range(outT, hour);
         const dir = tin > hi ? "hot" : tin < lo ? "cold" : null;
         const asleep = u.asleep ? (u.asleep[0] > u.asleep[1] ? hour >= u.asleep[0] || hour < u.asleep[1] : hour >= u.asleep[0] && hour < u.asleep[1]) : false;
         if (!dir) continue;
-        if (!asleep) ds.uncomfortableMin += 5;
+        ds.uncomfortableMin += 5;
+        if (asleep) ds.asleepUncomfortableMin += 5;
         if (!asleep && rnd() < u.voteRate * (5 / 60)) {
           feed({ type: "vote", now: fmt(d, minute), user: u.uid, dir, src: "sim" });
           ds.votes++;

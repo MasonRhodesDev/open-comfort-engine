@@ -1,6 +1,6 @@
 # Open Comfort Engine — Specification
 
-Version: **0.5.0-rc.1** (release candidate)
+Version: **0.5.0-rc.2** (release candidate)
 Status: normative. The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are
 to be interpreted as described in RFC 2119.
 
@@ -89,8 +89,8 @@ rule.
 - Durations are minutes unless a field name says otherwise.
 - Time: every event carries `now`, an RFC 3339 timestamp **with a UTC offset**
   (e.g. `2026-10-02T09:15:00-07:00`). The engine derives the instant `t` for
-  elapsed-time arithmetic. It needs no timezone database and never uses the
-  local time of day.
+  elapsed-time arithmetic and keeps the offset only to format times back. It
+  needs no timezone database and never computes a local time of day.
 - Events MUST be fed in non-decreasing `now` order. An event older than the
   last processed event MUST be rejected (no state change, `effects.records`
   contains one `{type:"rejected", reason:"time"}` record). A `reading` whose
@@ -152,6 +152,7 @@ comfort value.
 | `cooldownMin` | 30 | — | §7.3 |
 | `repeatWindowMin` | 120 | — | §7.3 |
 | `natureMargin` | 1.0 | 0.3–3 | §7.4 |
+| `releaseDwellMin` | 30 | 0–120 | §7.4 |
 | `complaintMin` | 120 | — | §7.2, §7.4, §7.8 |
 | `envelopePrior` | 0.3 | /h | §6.5 |
 | `equipmentPrior` | 2.0 | °C/h | §6.5 |
@@ -184,10 +185,10 @@ rejected with a `{type:"rejected", reason:"type"}` record.
 - `curve` — the tolerance curve: per side, one knot per outdoor temperature (§6.1).
 - `voters[uid]` — `{step, lastVote}` per voter (§7.3).
 - `reading` — last `{tin, rh, equip, applied, at}`; `weather` — last `{out, high, low, at}`.
-- `quiet` — `{since, lastAt}`: the attended quiet streak (§6.3).
+- `quiet` — `{lastAt}`: when quiet was last counted in the attended streak (§6.3).
 - `push` — per side `{at, edge}` or null: the felt edge a vote set (§7.2).
 - `complaintAt` — per side, when the last complaint was made (§7.4, §7.8).
-- `released` — per side booleans (§7.4).
+- `released` — per side booleans, and `releasedAt` when each last changed (§7.4).
 - `frozen` — boolean. `protecting` — `"max"`, `"min"` or null (§7.6).
 - `thermal` — `{envelope[], heat[], cool[]}`, the learned thermal response per knot (§6.5).
 - `lastOutput`, `lastEventAt`, `lastSnapshotAt`.
@@ -199,13 +200,16 @@ The **state** reported in the output is derived, in this priority order:
 1. `FROZEN` — `frozen` is true.
 2. `SEEDED` — no vote has ever been learned (every knot's `n` is 0).
 3. `CONVERGED` — at the current outdoor temperature, both sides have
-   `sigma < convergedSigma` and vote weight `≥ convergedVotes`.
+   `sigma < convergedSigma` and the two sides' vote weight together is
+   `≥ convergedVotes`.
 4. `LEARNING` — otherwise.
 
 ### 5.3 Processing order for one `step`
 
-1. Reject out-of-order, unknown or non-finite events (§2, §4).
-2. If the configured seed changed, restart the curve (§6.1).
+1. Reject out-of-order, unknown or non-finite events (§2, §4); a `restore`
+   whose snapshot cannot be read is rejected with `reason:"snapshot"`.
+2. If the configured seed or the grid/knot parameters changed, restart the
+   curve and the thermal model (§6.1).
 3. **Learn** for the time before this event: the attended quiet streak and its
    silence observations (§6.3).
 4. Apply the event (§6–§7, per type).
@@ -265,7 +269,7 @@ that knot's interpolation weight, `wt`:
 | observation | side updated | likelihood `L_i` |
 |---|---|---|
 | vote (`hot` → `cool` side, `cold` → `heat` side): the room is past that edge | the voted side | `Φ(σ·(tin − c_i)/voteNoise)^wt` |
-| quiet attended time: the room may be acceptable (§6.3) | both sides | `1 − s + s · Φ(σ·(c_i − tin)/silenceSigma)` with `s = clamp(wt, 0, 1)` |
+| quiet attended time: the room may be acceptable (§6.3) | both sides | `1 − s + s · Φ(z)` with `z = σ·(c_i − tin)/silenceSigma`, `s = clamp(wt, 0, 1)` — and exactly `1` where `z ≥ 2`: quiet says nothing about an edge the room is nowhere near, so a far edge is never walked outward by it |
 | manual (§7.3) | as the vote | the vote likelihood with weight `manualWeight` |
 
 Update: `w_i ← w_i · max(L_i, 1e−9)`, then normalise. A vote also adds `wt`
@@ -274,8 +278,9 @@ to the knot's `n`.
 Φ MUST be computed with the formula in Appendix A, so that implementations in
 different languages agree to within floating-point rounding.
 
-If no `reading` or no `weather` has been received, votes are recorded but cause
-no model update and no push (`effects.feedback = "noted.no_reading"`).
+If no `reading` has been received, or no `weather` within the last 3 h, votes
+are recorded but cause no model update and no push (`effects.feedback =
+"noted.no_reading"`): a dead weather feed must not teach the wrong knot.
 
 ### 6.3 Quiet attended time (exploration)
 
@@ -283,8 +288,10 @@ Quiet is evidence only if someone could have complained. The engine does not
 know who is home; it knows whether it is being **fed**. A quiet streak runs
 across continuous events: it starts (or restarts, counting nothing) whenever
 the gap since the previous event exceeds `attendedGapMin`, and whenever a vote
-is cast. Hosts feed the engine (ticks and readings) while someone is home and
-stop while nobody is.
+is cast. Time while `FROZEN`, or without a reading or a current (≤ 3 h)
+outdoor temperature, is not quiet either: it is skipped, never counted later.
+Hosts feed the engine (ticks and readings) while someone is home and stop
+while nobody is.
 
 Every `silenceEveryMin` of streak, the engine applies one quiet observation to
 both sides at the current `out` and `tin`, with weight
@@ -307,8 +314,8 @@ After every vote or manual update, on the updated knots:
 
 ### 6.5 Thermal response
 
-The zone's physics, learned from consecutive readings 1–30 min apart with the
-outdoor temperature known. The rate of change is variable, so it is learned
+The zone's physics, learned from consecutive readings 1–30 min apart with a
+current (≤ 3 h) outdoor temperature. The rate of change is variable, so it is learned
 as a **curve over outdoor temperature** on the same knots as the tolerance
 curve — the envelope coupling and each side's equipment rate per knot,
 interpolated like the curve (§6.1) and started from the priors:
@@ -379,9 +386,11 @@ A vote on a side, with a reading and weather available:
    `stepMin`) and grows by `stepGrow` on a repeated same-direction vote within
    `repeatWindowMin` (cap `stepMax`). A vote within `cooldownMin` of the same
    voter's previous vote is felt only if the room is **stalled** — it moved
-   inward since that vote by less than half of what the equipment should have
-   moved it, `0.5 · equipment[side] · hours` (§6.5); otherwise `feedback =
-   noted.cooldown` and only the learning stands. A felt vote pushes to
+   inward since that vote by less than half of what the thermal model (§6.5)
+   expected with the equipment running on that side over that time, from
+   that vote's room and the current outdoor temperature; otherwise
+   `feedback = noted.cooldown` and only the learning stands (an equipment
+   already doing all it can is not asked for more). A felt vote pushes to
    `target = tin − σ·step` (`feedback = nudge.cooler` / `nudge.warmer`); the
    new push is `inner(previous faded push, target)`.
 
@@ -394,28 +403,30 @@ push to `target = applied[side]`. A manual change is **not** a complaint: no
 ### 7.4 Nature (release)
 
 The outdoor air pushes the room along the vector `out − tin`. A side the room
-is being pushed **away from** has nothing to do: it is released to `setback`
-and the air does the work. It is taken back when the air pushes the other way,
-or when the room has caught up with the air and that was not enough to reach
-the band. With `push = σ·(out − tin)` (negative: the air pushes the room away
-from this edge) and `reach = σ·(edge − out)` (negative: the outdoor temperature
-is outside this edge):
+is being pushed **away from**, by air that can bring the room inside that
+edge on its own, has nothing to do: it is released to `setback` and the air
+does the work. It is taken back when the air pushes the other way or can no
+longer reach the edge. With `push = σ·(out − tin)` (negative: the air pushes
+the room away from this edge) and `reach = σ·(edge − out)` (negative: the
+outdoor temperature is outside this edge):
 
 ```
-released[side] ← true   when  push ≤ −natureMargin
-released[side] ← false  when  push ≥ +natureMargin,                 # the air now pushes the other way
-                        or (push ≥ −natureMargin/2 and reach < 0),  # the room caught up (it only ever approaches the air); the air could not reach the band
+released[side] ← true   when  push ≤ −natureMargin  and  reach ≥ 0
+released[side] ← false  when  push ≥ +natureMargin  or  reach < 0,
                         or out is unknown (older than 3 h), or a complaint on this side is fresh (within complaintMin)
+a change of released[side] is deferred while the last one is younger than releaseDwellMin
+  (unless the side is in a fresh complaint, or out/tin became unknown)
 if released[side]: setpoint[side] = setback[side]
 ```
 
 Between the thresholds nothing changes, so an outdoor reading jittering around
-the room temperature cannot flap a side; a room is never left resting outside
-the band when the air cannot bring it in; and a complaint on a side keeps it
-in the device's hands for `complaintMin` — the person is uncomfortable now and
-the air is too slow. Cooling is released only when the outdoor air is cooler
-than the room, so on a hot day cooling is always available; the same for
-heating on a cold one.
+the room temperature cannot flap a side, and the dwell keeps a sun-struck
+outdoor sensor from cycling the equipment; a room is never left outside the
+band when the air cannot bring it in (the device takes it at once); and a
+complaint on a side keeps it in the device's hands for `complaintMin` — the
+person is uncomfortable now and the air is too slow. Cooling is released only
+when the outdoor air is cooler than the room, so on a hot day cooling is
+always available; the same for heating on a cold one.
 
 ### 7.5 (reserved)
 
@@ -456,8 +467,8 @@ and are recorded. `freeze{on:false}` clears it.
 for each side:
   edge      = §7.2 (the band, or the felt push while it stands)
   wanted    = released ? setback[side] : edge                                   # §7.4
-  wanted    = clamped to capabilities[side]
-  setpoint  = the host's current setpoint if |wanted − current| < setpointStep  # a trigger band on the output
+  wanted    = clamped to capabilities[side]                                     # reason `limit` if the clamp bit
+  setpoint  = the engine's previous output if |wanted − previous| < setpointStep  # a trigger band on the output
               else wanted rounded inward to setpointStep (§2)
 if cool − heat < minGap: keep the side with a fresh complaint if exactly one has it, else the side the room
                          is pushed toward (`cool` if out > tin, else `heat`); the other side moves outward
@@ -468,6 +479,9 @@ mode = "auto" if supported;
        else the previous output's mode if it is a side that is not released (hysteresis);
        else the side opposing the outdoor air (out > tin → "cool", else "heat") if supported;
        else the first supported mode
+act:   the equipment runs on the side the room is outside of (tin past that setpoint) when that side is in the
+       device's hands — not released, or protection is clamping it — and the mode allows it (the projection, §7.9,
+       uses exactly this)
 ```
 
 Output object:
@@ -516,6 +530,8 @@ Migrating a version-1 or version-2 snapshot keeps `reading`, `weather`,
 hosts that kept vote records SHOULD replay them (as `weather` + `reading` +
 `vote` events at their original times) so the curve starts from real data.
 
+Migrating also happens when a version-3 snapshot was built with other grid or
+knot parameters (its `seedKey` differs): the curve and thermal model restart.
 The engine emits `effects.snapshot` after any event that changed the curve,
 the thermal model or `frozen`, or that produced a `decision` record (so a
 restored snapshot's `lastOutput` is the output actually published), and
@@ -535,7 +551,7 @@ Record types (all include `at` = `now` and `zone` = config `id`):
 |---|---|---|
 | `vote` | every accepted vote | `user, dir, src, tin, rh, out, applied, step, push, updated (bool), pushed (bool)` |
 | `decision` | output `heat`, `cool`, `mode`, `state`, `protect` or a `released` flag differs from the previous output | the full output without `curve` |
-| `rejected` | §2, §4 | `reason, event type` |
+| `rejected` | §2, §4, §9 | `reason` (`time`, `type`, `value`, `snapshot`), `event` type |
 
 Feedback codes (hosts render words, never numbers): `nudge.cooler`,
 `nudge.warmer`, `noted.cooldown`, `noted.no_reading`.

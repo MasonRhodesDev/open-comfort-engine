@@ -1,10 +1,9 @@
-// RFC 3339 timestamps with an offset (spec §2): the instant, plus the local
-// date and minute of day exactly as written — no timezone database.
+// RFC 3339 timestamps with an offset (spec §2): the instant, and the offset so the
+// engine can format a time back the way it was given. No timezone database, no
+// local time of day — the engine never uses one.
 
 export interface When {
   t: number; // epoch ms
-  date: string; // local YYYY-MM-DD
-  minute: number; // local minute of day, fractional (seconds / 60)
   offMin: number; // the timestamp's own UTC offset, minutes
 }
 
@@ -21,12 +20,7 @@ export function parseWhen(s: string): When {
     offMin = sign * (Number(off.slice(1, 3)) * 60 + Number(off.slice(4, 6)));
   }
   const localMs = Date.UTC(Number(Y), Number(Mo) - 1, Number(D), Number(h), Number(mi), 0) + secs * 1000;
-  return {
-    t: localMs - offMin * 60000,
-    date: `${Y}-${Mo}-${D}`,
-    minute: Number(h) * 60 + Number(mi) + secs / 60,
-    offMin,
-  };
+  return { t: localMs - offMin * 60000, offMin };
 }
 
 /** An instant as RFC 3339 in the given UTC offset (whole seconds). No Date object: pure arithmetic. */
@@ -50,14 +44,6 @@ export function formatWhen(t: number, offMin: number): string {
   const sign = offMin < 0 ? "-" : "+";
   const a = Math.abs(offMin);
   return `${y}-${two(m)}-${two(d)}T${two(hh)}:${two(mi)}:${two(ss)}${sign}${two(Math.floor(a / 60))}:${two(a % 60)}`;
-}
-
-export function parseHHMM(s: string): number {
-  const m = /^(\d{2}):(\d{2})$/.exec(s);
-  if (!m) throw new Error("bad HH:MM: " + s);
-  const v = Number(m[1]) * 60 + Number(m[2]);
-  if (v >= 1440) throw new Error("bad HH:MM: " + s);
-  return v;
 }
 
 export const MIN = 60000;

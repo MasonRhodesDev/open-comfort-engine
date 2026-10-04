@@ -58,6 +58,8 @@ export function runCase(c: SweepCase, hours = 6): SweepResult {
   feed({ type: "weather", now: fmt(start - 3), out: outAt(0) });
   feed({ type: "reading", now: fmt(start - 2), tin: c.tin0, equip: "idle" });
   let equipPrev: "heat" | "cool" | "idle" = "idle";
+  const couldSince = { heat: -1e9, cool: -1e9 }; // since when the air could have done this side's job
+  const DWELL = 30; // releaseDwellMin: a side may stay in the device's hands this long after the air turned
   const hourly: { heat: boolean; cool: boolean; heatMin: number; coolMin: number; changes: number; key: string | null; dirHeat: number; dirCool: number }[] = [];
   for (let m = 0; m < hours * 60; m += 5) {
     const now = start + m;
@@ -77,20 +79,24 @@ export function runCase(c: SweepCase, hours = 6): SweepResult {
     if (staticTin > c.seed.cool) { staticTin -= 0.25; r.staticHvacMin += 5; }
     else if (staticTin < c.seed.heat) { staticTin += 0.25; r.staticHvacMin += 5; }
     const at = fmt(now);
+    const could = { heat: outNow >= tin + 2 && outNow >= o.band.heat, cool: outNow <= tin - 2 && outNow <= o.band.cool };
+    for (const sd of ["heat", "cool"] as const) { if (!could[sd]) couldSince[sd] = m; }
+    const dwelling = (sd: "heat" | "cool") => m - couldSince[sd] < DWELL; // fighting counts once it has persisted past the dwell
     // --- checks on this step's action against the output that caused it
     if (equip === "heat") {
       hourly[hour].heat = true;
       hourly[hour].heatMin += 5;
       if (tin - 0.25 > o.band.cool) r.violations.push({ kind: "inverted", at, detail: `heating at ${tin.toFixed(1)} above band.cool ${o.band.cool}` });
       // heating to the setback floor is the floor doing its job, not a fight
-      if (outNow >= tin + 2 && o.heat > cfg.setback.heat && !o.protect && !o.reasons.includes("push")) r.violations.push({ kind: "fighting", at, detail: `heating at ${tin.toFixed(1)} with outdoor ${outNow.toFixed(1)} warmer (heat sp ${o.heat}, released ${o.released.heat})` });
+      // fighting the air: heating while the air is warmer AND could have brought the room inside the edge on its own
+      if (outNow >= tin + 2 && outNow >= o.band.heat && o.heat > cfg.setback.heat && !o.protect && !o.reasons.includes("push") && !dwelling("heat")) r.violations.push({ kind: "fighting", at, detail: `heating at ${tin.toFixed(1)} with outdoor ${outNow.toFixed(1)} warmer (heat sp ${o.heat}, released ${o.released.heat})` });
       if (o.released.heat && o.heat > cfg.setback.heat) r.violations.push({ kind: "leak", at, detail: `heat released but heating (sp ${o.heat})` });
     }
     if (equip === "cool") {
       hourly[hour].cool = true;
       hourly[hour].coolMin += 5;
       if (tin + 0.25 < o.band.heat) r.violations.push({ kind: "inverted", at, detail: `cooling at ${tin.toFixed(1)} below band.heat ${o.band.heat}` });
-      if (outNow <= tin - 2 && o.cool < cfg.setback.cool && !o.protect && !o.reasons.includes("push")) r.violations.push({ kind: "fighting", at, detail: `cooling at ${tin.toFixed(1)} with outdoor ${outNow.toFixed(1)} cooler (cool sp ${o.cool}, released ${o.released.cool})` });
+      if (outNow <= tin - 2 && outNow <= o.band.cool && o.cool < cfg.setback.cool && !o.protect && !o.reasons.includes("push") && !dwelling("cool")) r.violations.push({ kind: "fighting", at, detail: `cooling at ${tin.toFixed(1)} with outdoor ${outNow.toFixed(1)} cooler (cool sp ${o.cool}, released ${o.released.cool})` });
       if (o.released.cool && o.cool < cfg.setback.cool) r.violations.push({ kind: "leak", at, detail: `cool released but cooling (sp ${o.cool})` });
     }
     equipPrev = equip;

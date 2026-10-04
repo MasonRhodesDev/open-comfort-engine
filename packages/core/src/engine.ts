@@ -29,7 +29,8 @@ export { params };
 const EVENT_TYPES = new Set(["vote", "reading", "weather", "manual", "freeze", "tick", "restore"]);
 
 function seedKey(config: ZoneConfig): string {
-  return JSON.stringify([config.seed.heat, config.seed.cool]);
+  const p = params(config);
+  return JSON.stringify([config.seed.heat, config.seed.cool, p.gridMin, p.gridMax, p.gridStep, p.knotMin, p.knotMax, p.knotStep]);
 }
 
 function gridOf(config: ZoneConfig): Grid {
@@ -48,10 +49,11 @@ export function init(config: ZoneConfig): State {
     voters: {},
     reading: null,
     weather: null,
-    quiet: { since: null, lastAt: null },
+    quiet: { lastAt: null },
     push: { heat: null, cool: null },
     complaintAt: { heat: null, cool: null },
     released: { heat: false, cool: false },
+    releasedAt: { heat: null, cool: null },
     frozen: false,
     protecting: null,
     thermal: newThermal(gr.p),
@@ -61,18 +63,24 @@ export function init(config: ZoneConfig): State {
   };
 }
 
-/** §9: accept any snapshot version ≤ ours; older designs keep only what still means something. */
+/** §9: accept any snapshot version ≤ ours; older designs keep only what still means something. A v3
+ * snapshot built with other grid/knot parameters restarts the curve and thermal model the same way. */
 export function restore(snapshot: Snapshot, config?: ZoneConfig): State {
   if (!snapshot || typeof snapshot !== "object") throw new Error("bad snapshot");
   const v = (snapshot as { snapshotVersion?: number }).snapshotVersion;
   if (v !== 1 && v !== 2 && v !== 3) throw new Error("unsupported snapshotVersion " + v);
-  if (v === 3) return JSON.parse(JSON.stringify(snapshot));
+  if (v === 3 && (!config || (snapshot as Snapshot).seedKey === seedKey(config))) {
+    const s = JSON.parse(JSON.stringify(snapshot)) as State;
+    if (!s.releasedAt) s.releasedAt = { heat: null, cool: null };
+    if (!s.quiet || !("lastAt" in s.quiet)) s.quiet = { lastAt: null };
+    return s;
+  }
   // 0.1–0.4 snapshots: the tolerance curve starts fresh (hosts replay their vote records, §9);
   // the room, the weather and the switches carry over
   if (!config) throw new Error("restoring a version " + v + " snapshot needs the zone config");
   const old = snapshot as unknown as Record<string, unknown>;
   const s = init(config);
-  for (const k of ["reading", "weather", "frozen", "protecting", "lastEventAt"] as const) {
+  for (const k of ["reading", "weather", "frozen", "protecting", "lastEventAt", "voters"] as const) {
     if (old[k] !== undefined) (s as unknown as Record<string, unknown>)[k] = JSON.parse(JSON.stringify(old[k]));
   }
   return s;
@@ -91,6 +99,7 @@ interface ActInput {
   out: number | null;
   outBand: number | null;
   released: PerSide<boolean>;
+  releasedAt: PerSide<number | null>;
   push: PerSide<{ at: number; edge: number } | null>;
   fresh: PerSide<boolean>;
   protecting: "max" | "min" | null;
@@ -105,8 +114,11 @@ interface Act {
   mode: Mode;
   band: PerSide<number>;
   released: PerSide<boolean>;
+  releasedAt: PerSide<number | null>;
   push: PerSide<number | null>;
   protecting: "max" | "min" | null;
+  /** the side the equipment runs on now (the room is outside its setpoint and the side is in the device's hands) */
+  equipment: Side | null;
   reasons: string[];
 }
 
@@ -128,27 +140,39 @@ function act(gr: Grid, cfg: ZoneConfig, state: Pick<State, "curve">, inp: ActInp
   });
   const edge = perSide((side) => (push[side.key] === null ? band[side.key] : (push[side.key] as number)));
 
-  // §7.4 nature: a side is released to setback while the outdoor air pushes the room away from it. It is
-  // taken back when the air pushes the other way (beyond natureMargin, so jitter cannot flap it), or when
-  // the room has caught up with the air and the air could not take it inside the edge; never while a
-  // complaint on that side is fresh (§7.3)
+  // §7.4 nature: a side is released to setback while the outdoor air pushes the room away from it AND can
+  // bring the room inside that edge on its own. It is taken back when the air pushes the other way
+  // (beyond natureMargin, so jitter cannot flap it) or can no longer reach the edge (nobody is left
+  // stranded); never while a complaint is fresh (§7.3). A side keeps its state for releaseDwellMin after
+  // a change (a sun-struck outdoor sensor cannot cycle the equipment).
   const released = { ...inp.released };
+  const releasedAt = { ...inp.releasedAt };
   for (const side of SIDES) {
-    if (inp.out === null || inp.tin === null || inp.fresh[side.key]) { released[side.key] = false; continue; }
-    const pushAir = side.sign * (inp.out - inp.tin); // < 0: the air pushes the room away from this edge
-    const reach = inwardOf(side, edge[side.key], inp.out); // < 0: the outdoor temperature is outside this edge
-    if (pushAir >= p.natureMargin || (pushAir >= -p.natureMargin / 2 && reach < 0)) released[side.key] = false;
-    else if (pushAir <= -p.natureMargin) released[side.key] = true;
+    let want = released[side.key];
+    const known = inp.out !== null && inp.tin !== null;
+    if (!known || inp.fresh[side.key]) want = false;
+    else {
+      const pushAir = side.sign * ((inp.out as number) - (inp.tin as number)); // < 0: the air pushes the room away from this edge
+      const reach = inwardOf(side, edge[side.key], inp.out as number); // < 0: the outdoor temperature is outside this edge
+      if (pushAir >= p.natureMargin || reach < 0) want = false;
+      else if (pushAir <= -p.natureMargin) want = true;
+    }
+    if (want !== released[side.key]) {
+      const since = releasedAt[side.key];
+      const dwell = known && !inp.fresh[side.key] && since !== null && inp.t - since < p.releaseDwellMin * MIN;
+      if (!dwell) { released[side.key] = want; releasedAt[side.key] = inp.t; }
+    }
   }
-  const wanted = perSide((side) => clamp(released[side.key] ? cfg.setback[side.key] : edge[side.key], cap[side.key].min, cap[side.key].max));
+  const unclamped = perSide((side) => (released[side.key] ? cfg.setback[side.key] : edge[side.key]));
+  const wanted = perSide((side) => clamp(unclamped[side.key], cap[side.key].min, cap[side.key].max));
+  const limited = SIDES.some((side) => Math.abs(wanted[side.key] - unclamped[side.key]) > 1e-9);
   // §7.8 a trigger band on the output: a setpoint changes only once the wanted value is a full step away
-  // from the one the host has, so a band sliding by hundredths does not rewrite the device
+  // from the engine's last output, so a band sliding by hundredths does not rewrite the device
   const sp = perSide((side) => {
     const prev = inp.last ? inp.last[side.key] : null;
     if (prev !== null && Math.abs(wanted[side.key] - prev) < cap.setpointStep - 1e-9) return prev;
     return roundInward(wanted[side.key], cap.setpointStep, side.sign);
   });
-  const limited = SIDES.some((side) => Math.abs(sp[side.key] - wanted[side.key]) >= cap.setpointStep - 1e-9);
 
   // device minimum gap: `keep` stays, the other side moves outward (rounded outward) to restore it
   let gapped = false;
@@ -167,6 +191,7 @@ function act(gr: Grid, cfg: ZoneConfig, state: Pick<State, "curve">, inp: ActInp
   const prot = cfg.protect || {};
   let protecting = inp.protecting;
   let protectedClamp = false;
+  if (protecting !== null && prot[protecting] === undefined) protecting = null; // the limit is gone from the config
   for (const side of SIDES) {
     const limit = prot[side.limit];
     if (limit === undefined) continue;
@@ -193,13 +218,17 @@ function act(gr: Grid, cfg: ZoneConfig, state: Pick<State, "curve">, inp: ActInp
     mode = cap.modes.includes(want) ? want : cap.modes[0];
   }
 
+  // act: the equipment runs on the side the room is outside of, if that side is in the device's hands
+  // (not released, or protection is clamping it: hosts MUST actuate then) and the mode allows it
+  const equipment = inp.tin === null ? null : SIDES.find((side) => (!released[side.key] || protecting === side.limit) && inwardOf(side, sp[side.key], inp.tin as number) < 0 && (mode === "auto" || mode === side.key)) ?? null;
+
   if (band.cool - band.heat < cap.minGap - 1e-9) reasons.push("conflict");
   if (SIDES.some((side) => push[side.key] !== null)) reasons.push("push");
   if (SIDES.some((side) => released[side.key])) reasons.push("released");
   if (protectedClamp || protecting) reasons.push("protect");
   if (limited) reasons.push("limit");
   if (gapped) reasons.push("gap");
-  return { heat: sp.heat, cool: sp.cool, mode, band, released, push, protecting, reasons };
+  return { heat: sp.heat, cool: sp.cool, mode, band, released, releasedAt, push, protecting, equipment, reasons };
 }
 
 // ---------------------------------------------------------------- sense
@@ -210,7 +239,8 @@ function stateName(ctx: Ctx, out: number): StateName {
   if (s.frozen) return "FROZEN";
   const votes = s.curve.heat.reduce((a, k) => a + k.n, 0) + s.curve.cool.reduce((a, k) => a + k.n, 0);
   if (votes === 0) return "SEEDED";
-  const converged = SIDES.every((side) => sigmaAt(ctx, s.curve, side, out) < ctx.p.convergedSigma && votesAt(ctx, s.curve, side, out) >= ctx.p.convergedVotes);
+  // converged: both edges resolved here (sigma), and the population has spoken here (votes on either side)
+  const converged = SIDES.every((side) => sigmaAt(ctx, s.curve, side, out) < ctx.p.convergedSigma) && SIDES.reduce((a, side) => a + votesAt(ctx, s.curve, side, out), 0) >= ctx.p.convergedVotes;
   return converged ? "CONVERGED" : "LEARNING";
 }
 
@@ -228,6 +258,7 @@ function computeOutput(ctx: Ctx): Output {
     out: ctx.out,
     outBand: ctx.outForBand,
     released: s.released,
+    releasedAt: s.releasedAt,
     push: s.push,
     fresh: freshComplaints(ctx),
     protecting: s.protecting,
@@ -235,6 +266,7 @@ function computeOutput(ctx: Ctx): Output {
     last: s.lastOutput ? { heat: s.lastOutput.heat, cool: s.lastOutput.cool } : null,
   });
   s.released = a.released;
+  s.releasedAt = a.releasedAt;
   for (const side of SIDES) if (a.push[side.key] === null) s.push[side.key] = null; // absorbed or faded away
   s.protecting = a.protecting;
   const st = stateName(ctx, outBand);
@@ -280,12 +312,12 @@ function learn(ctx: Ctx, prevT: number | null) {
   const p = ctx.p;
   const t = ctx.w.t;
   if (prevT === null || t - prevT > p.attendedGapMin * MIN) {
-    s.quiet = { since: t, lastAt: t }; // a gap: nobody was being asked, the streak starts over
+    s.quiet = { lastAt: t }; // a gap: nobody was being asked, the streak starts over
     return;
   }
   if (s.quiet.lastAt === null) s.quiet.lastAt = t;
-  const out = ctx.outForBand;
-  if (s.frozen || !s.reading || out === null) return;
+  const out = ctx.out;
+  if (s.frozen || !s.reading || out === null) { s.quiet.lastAt = t; return; } // not evidence: frozen, or nothing to judge against
   while (t - s.quiet.lastAt >= p.silenceEveryMin * MIN) {
     for (const side of SIDES) observeSilence(ctx, s.curve, side, out, s.reading.tin, explorationWeight(ctx, side, out));
     s.quiet.lastAt += p.silenceEveryMin * MIN;
@@ -299,7 +331,7 @@ function onVote(ctx: Ctx, ev: Extract<EngineEvent, { type: "vote" }>) {
   const t = ctx.w.t;
   const side = sideForVote(ev.dir);
   const r = s.reading;
-  const out = ctx.outForBand;
+  const out = ctx.out; // learning needs a current outdoor temperature (≤ 3 h): a dead feed must not teach the wrong knot
   let updated = false;
   let pushed = false;
   if (!r || out === null) ctx.feedback = "noted.no_reading";
@@ -311,11 +343,11 @@ function onVote(ctx: Ctx, ev: Extract<EngineEvent, { type: "vote" }>) {
     const last = voter.lastVote;
     pushed = true;
     if (last && t - last.at < p.cooldownMin * MIN) {
-      // §4: inside the cooldown a repeat counts only if the room is stalled — it moved less than the
-      // equipment should have moved it since the last vote
-      const expected = Math.abs(expectedChange(s.thermal, p, out, (t - last.at) / 3600000, 0, side.key));
+      // §7.3: inside the cooldown a repeat counts only if the room is stalled — it moved inward less than
+      // half of what the thermal model expected with the equipment running on that side
+      const expected = inwardOf(side, 0, expectedChange(s.thermal, p, out, (t - last.at) / 3600000, out - last.tin, side.key)); // > 0: expected inward movement
       const moved = inwardOf(side, last.tin, r.tin); // > 0 when the room moved inward since the last vote
-      if (moved >= 0.5 * expected && expected > 1e-9) pushed = false;
+      if (expected > 1e-9 && moved >= 0.5 * expected) pushed = false;
     }
     if (pushed) {
       if (last && last.dir !== side.dir) voter.step = Math.max(p.stepMin, voter.step / 2);
@@ -345,7 +377,7 @@ function onVote(ctx: Ctx, ev: Extract<EngineEvent, { type: "vote" }>) {
 function onManual(ctx: Ctx, ev: Extract<EngineEvent, { type: "manual" }>) {
   const s = ctx.s;
   const lo = s.lastOutput;
-  const out = ctx.outForBand;
+  const out = ctx.out;
   if (!lo || !s.reading || out === null) return;
   for (const side of SIDES) {
     const applied = ev.applied[side.key];
@@ -362,9 +394,10 @@ function onReading(ctx: Ctx, ev: Extract<EngineEvent, { type: "reading" }>) {
   const prev = s.reading;
   // §2b the interval since the previous reading teaches the thermal model; `equip` reports what the
   // equipment has been doing since that reading
-  if (prev && s.weather) {
+  const out = ctx.out;
+  if (prev && out !== null) {
     const dtMin = (t - prev.at) / MIN;
-    if (dtMin >= 1 && dtMin <= 30) observeInterval(s.thermal, ctx.p, s.weather.out, dtMin / 60, ev.tin - prev.tin, s.weather.out - prev.tin, ev.equip ?? null);
+    if (dtMin >= 1 && dtMin <= 30) { observeInterval(s.thermal, ctx.p, out, dtMin / 60, ev.tin - prev.tin, out - prev.tin, ev.equip ?? null); ctx.dirty = true; }
   }
   s.reading = { tin: ev.tin, rh: ev.rh ?? null, equip: ev.equip ?? null, applied: ev.applied ?? null, at: t };
 }
@@ -390,7 +423,12 @@ export function step(state: State, event: EngineEvent, config: ZoneConfig): Step
   if ((event.type === "reading" && !Number.isFinite(event.tin)) || (event.type === "weather" && !Number.isFinite(event.out))) return reject(state, config, nowStr, "value", event.type);
 
   if (event.type === "restore") {
-    const r = restore(event.snapshot, config);
+    let r: State;
+    try {
+      r = restore(event.snapshot, config);
+    } catch {
+      return reject(state, config, nowStr, "snapshot", event.type);
+    }
     const ctx = new Ctx(r, config, w, nowStr);
     const out = computeOutput(ctx);
     finishOutput(ctx, out);
@@ -401,10 +439,11 @@ export function step(state: State, event: EngineEvent, config: ZoneConfig): Step
   const p = ctx.p;
   const prevT = s.lastEventAt;
 
-  // §3.2 a new seed restarts the curve
+  // §3.2 a new seed (or grid/knot parameters) restarts the curve and the thermal model
   if (s.seedKey !== seedKey(config)) {
     s.seedKey = seedKey(config);
     s.curve = newCurve(ctx, config.seed);
+    s.thermal = newThermal(ctx.p);
     ctx.dirty = true;
   }
   // §5.3 step 4: the elapsed time before this event (learn)
@@ -507,6 +546,7 @@ export function project(state: State, config: ZoneConfig, day: ProjectionDay): P
   const th = state.thermal;
   let tin = day.tin;
   let released: PerSide<boolean> = { ...state.released };
+  let releasedAt: PerSide<number | null> = { ...state.releasedAt };
   let protecting = state.protecting;
   let lastMode: Mode | null = state.lastOutput ? state.lastOutput.mode : null;
   let last: PerSide<number> | null = state.lastOutput ? { heat: state.lastOutput.heat, cool: state.lastOutput.cool } : null;
@@ -516,23 +556,23 @@ export function project(state: State, config: ZoneConfig, day: ProjectionDay): P
     const { now, out } = day.hours[h];
     const next = day.hours[h + 1];
     const minutes = next ? Math.max(1, (parseWhen(next.now).t - parseWhen(now).t) / MIN) : 60;
-    const a = act(gr, config, state, { t: parseWhen(now).t, tin, out, outBand: out, released, push: { heat: null, cool: null }, fresh: none, protecting, lastMode, last });
+    const t0 = parseWhen(now).t;
+    const a = act(gr, config, state, { t: t0, tin, out, outBand: out, released, releasedAt, push: { heat: null, cool: null }, fresh: none, protecting, lastMode, last });
     released = a.released;
+    releasedAt = a.releasedAt;
     protecting = a.protecting;
     lastMode = a.mode;
     last = { heat: a.heat, cool: a.cool };
-    // the room over this interval: 5-minute substeps of the thermal model, equipment on when outside
+    // the room over this interval: 5-minute substeps of the thermal model, the equipment deciding as act() does
     let runMin = 0;
     let equipment: "heat" | "cool" | "idle" = "idle";
     const tin0 = tin;
     for (let m = 0; m < minutes; m += 5) {
       const dt = Math.min(5, minutes - m) / 60;
-      // a side runs when the room is outside its setpoint and the side is not released — or protection is
-      // clamping it, since hosts MUST actuate then (§7.6)
-      const side = SIDES.find((sd) => (!released[sd.key] || protecting === sd.limit) && inwardOf(sd, sd.key === "heat" ? a.heat : a.cool, tin) < 0 && (a.mode === "auto" || a.mode === sd.key)) ?? null;
-      const equip: Equip | null = side ? side.key : null;
+      const sub = act(gr, config, state, { t: t0 + m * MIN, tin, out, outBand: out, released, releasedAt, push: { heat: null, cool: null }, fresh: none, protecting, lastMode, last });
+      const equip: Equip | null = sub.equipment ? sub.equipment.key : null;
       tin += expectedChange(th, gr.p, out, dt, out - tin, equip);
-      if (side) { runMin += dt * 60; equipment = side.key; }
+      if (sub.equipment) { runMin += dt * 60; equipment = sub.equipment.key; }
     }
     rows.push({ now, out, tin: Math.round(tin0 * 100) / 100, band: a.band, heat: a.heat, cool: a.cool, released: { ...released }, equipment, runMin: Math.round(runMin), deltaFromAmbient: perSide((sd) => a.band[sd.key] - out) });
   }

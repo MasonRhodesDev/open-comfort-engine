@@ -24,13 +24,15 @@ const base = (tin = 24.0, out = tin, d = 1): EngineEvent[] => [
   { type: "reading", now: at(d, "09:06"), tin, equip: "idle" },
 ];
 const lastOf = <T,>(xs: T[]) => xs[xs.length - 1];
-/** n quiet attended hours: a reading every 5 minutes */
-function quiet(hours: number, tin: number, from = "09:06", d = 1): EngineEvent[] {
+/** n quiet attended hours: a reading every 5 minutes, the outdoor temperature repeated hourly (hosts send it ≤ 10 min apart) */
+function quiet(hours: number, tin: number, from = "09:06", d = 1, out?: number): EngineEvent[] {
   const [h0, m0] = from.split(":").map(Number);
   const evs: EngineEvent[] = [];
   for (let m = 5; m <= hours * 60; m += 5) {
     const mm = h0 * 60 + m0 + m;
-    evs.push({ type: "reading", now: at(d, `${String(Math.floor(mm / 60)).padStart(2, "0")}:${String(mm % 60).padStart(2, "0")}`), tin, equip: "idle" });
+    const now = at(d, `${String(Math.floor(mm / 60)).padStart(2, "0")}:${String(mm % 60).padStart(2, "0")}`);
+    if (m % 60 === 0 && out !== undefined) evs.push({ type: "weather", now, out });
+    evs.push({ type: "reading", now, tin, equip: "idle" });
   }
   return evs;
 }
@@ -43,9 +45,8 @@ describe("math (Appendix A)", () => {
   });
   it("parses local time from the offset, no tz database", () => {
     const w = parseWhen("2026-10-02T09:15:30-07:00");
-    expect(w.date).toBe("2026-10-02");
-    expect(w.minute).toBeCloseTo(555.5, 9);
     expect(w.t).toBe(Date.UTC(2026, 9, 2, 16, 15, 30));
+    expect(w.offMin).toBe(-420);
   });
   it("knots span the configured outdoor range", () => {
     expect(knots(params(house))).toEqual([-10, -5, 0, 5, 10, 15, 20, 25, 30, 35, 40, 45]);
@@ -98,7 +99,7 @@ describe("tolerance curve (§6)", () => {
 
 describe("exploration decays with confidence (§6.3)", () => {
   it("quiet attended hours widen an uncertain edge the room is near, past the room", () => {
-    const { outs } = drive([...base(24.0, 24), ...quiet(6, 25.0)]);
+    const { outs } = drive([...base(24.0, 24), ...quiet(6, 25.0, "09:06", 1, 24)]);
     expect(lastOf(outs).band.cool).toBeGreaterThan(outs[1].band.cool + 0.3); // about 0.1 °C per quiet hour at the start
     expect(lastOf(outs).band.heat).toBe(outs[1].band.heat); // the room is nowhere near the heat edge: no evidence about it
     expect(lastOf(outs).reasons).not.toContain("push");
@@ -121,14 +122,14 @@ describe("exploration decays with confidence (§6.3)", () => {
     // a quiet night: readings every 5 min, nobody votes
     let r = step(before.state, { type: "reading", now: at(13, "00:01"), tin: 23.0, equip: "idle" }, house);
     const c0 = r.output.band.cool;
-    for (const e of quiet(7, 23.0, "00:01", 13)) r = step(r.state, e, house);
+    for (const e of quiet(7, 23.0, "00:01", 13, 20)) r = step(r.state, e, house);
     expect(Math.abs(r.output.band.cool - c0)).toBeLessThan(house.capabilities.setpointStep * (1 - conf) + 0.05);
   });
   it("a zone that can correct faster explores faster", () => {
     const fast = { ...house, params: { equipmentPrior: 6 } };
     const slow = { ...house, params: { equipmentPrior: 0.5 } };
-    const f = lastOf(drive([...base(24.0, 24), ...quiet(4, 25.0)], fast).outs).band.cool;
-    const sl = lastOf(drive([...base(24.0, 24), ...quiet(4, 25.0)], slow).outs).band.cool;
+    const f = lastOf(drive([...base(24.0, 24), ...quiet(4, 25.0, "09:06", 1, 24)], fast).outs).band.cool;
+    const sl = lastOf(drive([...base(24.0, 24), ...quiet(4, 25.0, "09:06", 1, 24)], slow).outs).band.cool;
     expect(f).toBeGreaterThan(sl);
   });
 });
@@ -195,13 +196,31 @@ describe("nature (§7.4)", () => {
     r = step(r.state, { type: "weather", now: at(1, "11:00"), out: 20.9 }, house);
     expect(r.state.released.heat).toBe(false);
   });
-  it("nobody is stranded: the air does what it can, then the device takes over", () => {
+  it("nobody is stranded: when the air cannot reach the band, a room already well outside it is conditioned at once", () => {
     const cfg = { ...house, seed: { heat: 18, cool: 22 } };
-    let r = drive(base(14, 15), cfg).last;
-    expect(r.output.released.heat).toBe(true);
-    r = step(r.state, { type: "reading", now: at(1, "09:10"), tin: 14.95, equip: "idle" }, cfg);
+    const r = drive(base(14, 15), cfg).last; // 4 °C below the edge, the air can only take it to 15
     expect(r.output.released.heat).toBe(false);
     expect(r.output.heat).toBe(18);
+    // with the air just inside the edge, released; once the air falls short of the edge, taken back
+    let r2 = drive(base(16.5, 18.2), cfg).last;
+    expect(r2.output.released.heat).toBe(true);
+    r2 = step(r2.state, { type: "weather", now: at(1, "10:00"), out: 17.9 }, cfg);
+    expect(r2.output.released.heat).toBe(false);
+    // with the air inside the band, the room resting at the air's temperature is fine: stays released
+    let r3 = drive(base(17.4, 19), cfg).last;
+    r3 = step(r3.state, { type: "reading", now: at(1, "10:00"), tin: 18.95, equip: "idle" }, cfg);
+    expect(r3.output.released.heat).toBe(true);
+  });
+  it("release dwells: a sun-struck outdoor sensor swinging ±3 °C cannot cycle the equipment", () => {
+    let r = drive(base(24, 24), house).last;
+    let changes = 0;
+    let prev = r.output.released.heat;
+    for (let i = 1; i <= 36; i++) {
+      const mm = 9 * 60 + 6 + i * 10;
+      r = step(r.state, { type: "weather", now: at(1, `${String(Math.floor(mm / 60)).padStart(2, "0")}:${String(mm % 60).padStart(2, "0")}`), out: i % 2 ? 27 : 21 }, house);
+      if (r.output.released.heat !== prev) { changes++; prev = r.output.released.heat; }
+    }
+    expect(changes).toBeLessThanOrEqual(12); // at most one change per releaseDwellMin (30 min) over 6 h
   });
   it("stale weather releases nothing", () => {
     const o = lastOf(drive([...base(19.9, 31), { type: "reading", now: at(1, "13:00"), tin: 19.9, equip: "idle" }]).outs);
@@ -218,7 +237,7 @@ describe("thermal response (§2b)", () => {
     for (; m < 240; m += 10) { evs.push({ type: "reading", now: at(1, `${9 + Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}`), tin: Math.round(tin * 100) / 100, equip: "cool" }); tin += (0.5 * (30 - tin) - 3) * (10 / 60); }
     const { s, outs } = drive(evs);
     expect(lastOf(outs).thermal.envelope).toBeGreaterThan(0.38); // at 30 °C out: moving from the 0.3 prior toward 0.5
-    expect(lastOf(outs).thermal.cool).toBeGreaterThan(2.2); // moving from the 2.0 prior toward 3 at thermalForget per interval
+    expect(lastOf(outs).thermal.cool).toBeGreaterThan(2.1); // moving from the 2.0 prior toward 3 at thermalForget per interval (split over two knots)
     expect(s.thermal.cool[0]).toBe(2.0); // the −10 °C knot saw nothing
   });
 });
