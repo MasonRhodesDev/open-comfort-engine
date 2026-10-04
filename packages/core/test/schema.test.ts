@@ -20,13 +20,14 @@ describe("schemas", () => {
       expect(v("zone-config")(head.config), JSON.stringify(v("zone-config").errors)).toBe(true);
       for (const l of lines) {
         if (l.roundtrip) continue;
-        if (l.event.type !== "bogus") expect(v("event")(l.event), JSON.stringify(v("event").errors)).toBe(true);
+        const rejected = l.expect.effects.records.some((r: any) => r.type === "rejected");
+        if (!rejected) expect(v("event")(l.event), JSON.stringify(v("event").errors)).toBe(true);
         expect(v("output")(l.expect.output), JSON.stringify(v("output").errors)).toBe(true);
       }
     });
   }
   it("a snapshot validates", () => {
-    const r = step(init(house), { type: "presence", now: "2026-07-01T09:00:00-07:00", users: ["a"] }, house);
+    const r = step(init(house), { type: "reading", now: "2026-07-01T09:00:00-07:00", tin: 23, equip: "idle" }, house);
     expect(v("snapshot")(r.effects.snapshot), JSON.stringify(v("snapshot").errors)).toBe(true);
     expect(v("effects")(r.effects), JSON.stringify(v("effects").errors)).toBe(true);
   });

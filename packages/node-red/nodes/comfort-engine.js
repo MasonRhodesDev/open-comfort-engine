@@ -40,13 +40,13 @@ module.exports = function (RED) {
       const o = r.output;
       const outMsg = {
         topic: zone.id,
-        payload: { heat: toUnits(o.heat), cool: toUnits(o.cool), mode: o.mode, state: o.state, units, released: o.released, protect: o.protect, blockEnd: o.blockEnd },
+        payload: { heat: toUnits(o.heat), cool: toUnits(o.cool), mode: o.mode, state: o.state, units, released: o.released, protect: o.protect, thermal: o.thermal },
         engine: o,
       };
       const recs = r.effects.records.map((rec) => ({ topic: rec.type, payload: rec }));
       const snap = r.effects.snapshot ? { topic: "snapshot", payload: r.effects.snapshot } : null;
       const fb = r.effects.feedback ? { topic: r.effects.feedback, payload: FEEDBACK_EN[r.effects.feedback] || r.effects.feedback, event } : null;
-      node.status({ fill: o.state === "FROZEN" ? "grey" : o.protect ? "red" : o.state === "VACANT" ? "blue" : "green", shape: "dot",
+      node.status({ fill: o.state === "FROZEN" ? "grey" : o.protect ? "red" : "green", shape: "dot",
         text: `${o.state} ${toUnits(o.heat)}–${toUnits(o.cool)}° ${o.reasons.filter((x) => x !== "seed").join(",")}` });
       // setpoints when the decision changed (the engine emits a `decision` record then), on the
       // first step after start and after a restore (consumers may hold a stale value), or on every
@@ -62,14 +62,24 @@ module.exports = function (RED) {
       // msg.payload is an engine event, or msg.topic is the event type and msg.payload its fields
       let ev = msg.payload && typeof msg.payload === "object" && msg.payload.type ? { ...msg.payload } : { ...(typeof msg.payload === "object" ? msg.payload : {}), type: msg.topic };
       if (!ev.type) {
-        done(new Error("comfort-engine: need msg.payload.type or msg.topic (vote, presence, reading, weather, cost, manual, freeze, tick, restore)"));
+        done(new Error("comfort-engine: need msg.payload.type or msg.topic (vote, reading, weather, manual, freeze, tick, restore, project)"));
+        return;
+      }
+      if (ev.type === "project") {
+        // spec §7.9: a day's range from ambient, on output 1 as msg.projection (no state change)
+        try {
+          const day = { tin: units === "F" ? fToC(ev.tin) : ev.tin, hours: (ev.hours || []).map((h) => ({ now: h.now, out: units === "F" ? fToC(h.out) : h.out })) };
+          const rows = core.project(state, zone, day).map((r) => units === "F" ? { ...r, out: cToF(r.out), tin: cToF(r.tin), heat: cToF(r.heat), cool: cToF(r.cool), band: { heat: cToF(r.band.heat), cool: cToF(r.band.cool) } } : r);
+          send([{ topic: "projection", payload: rows, projection: rows, units }, null, null, null]);
+          done();
+        } catch (e) { done(e); }
         return;
       }
       if (units === "F") ev = fromUnits(ev);
       apply(ev, send, done);
     });
 
-    // event temperatures in °F -> °C (votes and presence have none)
+    // event temperatures in °F -> °C (votes have none)
     function fromUnits(ev) {
       const c = { ...ev };
       if (typeof c.tin === "number") c.tin = fToC(c.tin);

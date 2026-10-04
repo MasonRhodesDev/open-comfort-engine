@@ -21,8 +21,6 @@
             "enum": [
               "vote",
               "decision",
-              "conflict",
-              "blocks",
               "rejected"
             ]
           },
@@ -43,8 +41,6 @@
         "nudge.cooler",
         "nudge.warmer",
         "noted.cooldown",
-          "noted.absent",
-        "noted.hold",
         "noted.no_reading"
       ]
     }

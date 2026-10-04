@@ -1,37 +1,30 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/MasonRhodesDev/open-comfort-engine/spec/schema/snapshot.schema.json",
-  "title": "Snapshot: complete engine state (spec \u00a79). Instants are epoch milliseconds.",
+  "title": "Snapshot (spec \u00a79)",
   "type": "object",
   "required": [
     "snapshotVersion",
     "zone",
     "seedKey",
-    "blocks",
-    "nextBlockNo",
-    "models",
-    "presence",
-    "lastSilenceAt",
+    "curve",
+    "voters",
     "reading",
     "weather",
-    "risk",
-    "paused",
-    "nudge",
+    "quiet",
+    "push",
+    "complaintAt",
     "released",
     "frozen",
     "protecting",
-    "responseRate",
-    "structure",
-    "cost",
-    "conflictDay",
+    "thermal",
     "lastOutput",
-    "lastBlockId",
     "lastEventAt",
     "lastSnapshotAt"
   ],
   "properties": {
     "snapshotVersion": {
-      "const": 2
+      "const": 3
     },
     "zone": {
       "type": "string"
@@ -39,149 +32,116 @@
     "seedKey": {
       "type": "string"
     },
-    "blocks": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": [
-          "id",
-          "start",
-          "heat",
-          "cool"
-        ],
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "start": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 1439
-          },
-          "heat": {
-            "type": "number"
-          },
-          "cool": {
-            "type": "number"
-          }
-        }
-      }
-    },
-    "nextBlockNo": {
-      "type": "integer"
-    },
-    "models": {
+    "curve": {
       "type": "object",
-      "additionalProperties": {
-        "type": "object",
-        "additionalProperties": {
-          "type": "object",
-          "required": [
-            "lower",
-            "upper",
-            "n",
-            "step",
-            "lastVote"
-          ],
-          "properties": {
-            "lower": {
-              "type": "array",
-              "items": {
-                "type": "number",
-                "minimum": 0
-              }
-            },
-            "upper": {
-              "type": "array",
-              "items": {
-                "type": "number",
-                "minimum": 0
-              }
-            },
-            "n": {
-              "type": "number"
-            },
-            "step": {
-              "type": "number"
-            },
-            "lastVote": {
-              "oneOf": [
-                {
-                  "type": "null"
-                },
-                {
-                  "type": "object",
-                  "required": [
-                    "at",
-                    "dir",
-                    "tin"
-                  ],
-                  "properties": {
-                    "at": {
-                      "type": "number"
-                    },
-                    "dir": {
-                      "enum": [
-                        "hot",
-                        "cold"
-                      ]
-                    },
-                    "tin": {
-                      "type": "number"
-                    }
-                  }
+      "required": [
+        "heat",
+        "cool"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "heat": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "w",
+              "n"
+            ],
+            "properties": {
+              "w": {
+                "type": "array",
+                "items": {
+                  "type": "number"
                 }
-              ]
+              },
+              "n": {
+                "type": "number"
+              }
+            }
+          }
+        },
+        "cool": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "w",
+              "n"
+            ],
+            "properties": {
+              "w": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                }
+              },
+              "n": {
+                "type": "number"
+              }
             }
           }
         }
       }
     },
-    "presence": {
-      "type": "object",
-      "required": [
-        "known",
-        "users",
-        "expectedArrival",
-        "expectedUsers",
-        "since"
-      ],
-      "properties": {
-        "known": {
-          "type": "boolean"
-        },
-        "users": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "expectedArrival": {
-          "type": [
-            "number",
-            "null"
-          ]
-        },
-        "expectedUsers": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
-        },
-        "since": {
-          "type": [
-            "number",
-            "null"
-          ]
-        }
-      }
-    },
-    "lastSilenceAt": {
+    "voters": {
       "type": "object",
       "additionalProperties": {
-        "type": "number"
+        "type": "object",
+        "required": [
+          "step",
+          "lastVote"
+        ],
+        "properties": {
+          "step": {
+            "type": "number"
+          },
+          "lastVote": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "required": [
+                  "at",
+                  "dir",
+                  "tin"
+                ],
+                "properties": {
+                  "at": {
+                    "type": "number"
+                  },
+                  "dir": {
+                    "enum": [
+                      "hot",
+                      "cold"
+                    ]
+                  },
+                  "tin": {
+                    "type": "number"
+                  },
+                  "equip": {
+                    "oneOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "enum": [
+                          "heat",
+                          "cool",
+                          "fan",
+                          "idle",
+                          "off"
+                        ]
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        }
       }
     },
     "reading": {
@@ -194,7 +154,68 @@
           "required": [
             "tin",
             "at"
-          ]
+          ],
+          "properties": {
+            "tin": {
+              "type": "number"
+            },
+            "rh": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "number"
+                }
+              ]
+            },
+            "equip": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "enum": [
+                    "heat",
+                    "cool",
+                    "fan",
+                    "idle",
+                    "off"
+                  ]
+                }
+              ]
+            },
+            "applied": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "heat": {
+                      "type": "number"
+                    },
+                    "cool": {
+                      "type": "number"
+                    },
+                    "mode": {
+                      "enum": [
+                        "heat",
+                        "cool",
+                        "auto",
+                        "off"
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              ]
+            },
+            "at": {
+              "type": "number"
+            }
+          }
         }
       ]
     },
@@ -208,11 +229,68 @@
           "required": [
             "out",
             "at"
-          ]
+          ],
+          "properties": {
+            "out": {
+              "type": "number"
+            },
+            "high": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "number"
+                }
+              ]
+            },
+            "low": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "number"
+                }
+              ]
+            },
+            "at": {
+              "type": "number"
+            }
+          }
         }
       ]
     },
-    "nudge": {
+    "quiet": {
+      "type": "object",
+      "required": [
+        "since",
+        "lastAt"
+      ],
+      "properties": {
+        "since": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
+        "lastAt": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        }
+      }
+    },
+    "push": {
       "type": "object",
       "required": [
         "heat",
@@ -242,86 +320,7 @@
         }
       }
     },
-    "frozen": {
-      "type": "boolean"
-    },
-    "responseRate": {
-      "type": "number"
-    },
-    "structure": {
-      "type": "object",
-      "required": [
-        "rng",
-        "lastRunDate",
-        "trials",
-        "votes"
-      ],
-      "properties": {
-        "rng": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 4294967295
-        }
-      }
-    },
-    "cost": {
-      "type": "number"
-    },
-    "conflictDay": {
-      "type": "object"
-    },
-    "lastOutput": {
-      "oneOf": [
-        {
-          "type": "null"
-        },
-        {
-          "$ref": "output.schema.json"
-        }
-      ]
-    },
-    "lastBlockId": {
-      "type": [
-        "string",
-        "null"
-      ]
-    },
-    "lastEventAt": {
-      "type": [
-        "number",
-        "null"
-      ]
-    },
-    "lastSnapshotAt": {
-      "type": [
-        "number",
-        "null"
-      ]
-    },
-    "protecting": {
-      "enum": [
-        "max",
-        "min",
-        null
-      ]
-    },
-    "risk": {
-      "type": "object",
-      "required": [
-        "heat",
-        "cool"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "heat": {
-          "type": "number"
-        },
-        "cool": {
-          "type": "number"
-        }
-      }
-    },
-    "paused": {
+    "complaintAt": {
       "type": "object",
       "required": [
         "heat",
@@ -366,6 +365,71 @@
           "type": "boolean"
         }
       }
+    },
+    "frozen": {
+      "type": "boolean"
+    },
+    "protecting": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "enum": [
+            "max",
+            "min"
+          ]
+        }
+      ]
+    },
+    "thermal": {
+      "type": "object",
+      "required": [
+        "envelope",
+        "heat",
+        "cool"
+      ],
+      "properties": {
+        "envelope": {
+          "type": "number"
+        },
+        "heat": {
+          "type": "number"
+        },
+        "cool": {
+          "type": "number"
+        }
+      }
+    },
+    "lastOutput": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "output.schema.json"
+        }
+      ]
+    },
+    "lastEventAt": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "number"
+        }
+      ]
+    },
+    "lastSnapshotAt": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "number"
+        }
+      ]
     }
   }
 }

@@ -1,6 +1,7 @@
-// Permutation sweep: every combination of common indoor / outdoor temperatures, seed
-// bands and occupancy, run through the engine with a first-order room model and a
-// thermostat acting on the engine's output. Looks for strange behaviour:
+// Permutation sweep: every combination of common indoor / outdoor temperatures and seed
+// bands, run through the engine with a first-order room model and a thermostat acting on
+// the engine's output. (Presence is the host's: it does not feed the engine when nobody is
+// home, so there is no vacant case here.) Looks for strange behaviour:
 //   inverted   equipment pushing the room the wrong way (heating above the band, cooling below)
 //   fighting   equipment working against the outdoor air (beyond the natureMargin + a sampling lag) while nature would have done the job
 //   both       heating and cooling inside the same hour
@@ -15,8 +16,6 @@ export interface SweepCase {
   tin0: number;
   out: number;
   seed: { heat: number; cool: number };
-  occupied: boolean;
-  asleep: boolean;
   /** outdoor swings ±swing °C around `out` over the horizon (crosses the room temperature) */
   swing?: number;
 }
@@ -43,11 +42,7 @@ const fmt = (minute: number) => {
 
 /** One case: `hours` of 5-minute steps from 09:00 (daytime; the sleep window is 00:00–06:00 when asleep). */
 export function runCase(c: SweepCase, hours = 6): SweepResult {
-  const cfg: ZoneConfig = {
-    ...house,
-    seed: { blocks: [{ start: "00:00", heat: c.seed.heat, cool: c.seed.cool }] },
-    sleep: c.asleep ? [{ start: "00:00", end: "23:59" }] : [],
-  };
+  const cfg: ZoneConfig = { ...house, seed: { heat: c.seed.heat, cool: c.seed.cool } };
   let s = init(cfg);
   let out: Output | null = null;
   let tin = c.tin0;
@@ -62,7 +57,6 @@ export function runCase(c: SweepCase, hours = 6): SweepResult {
   const outAt = (m: number) => c.out + (c.swing ?? 0) * Math.sin((m / (hours * 60)) * 2 * Math.PI);
   feed({ type: "weather", now: fmt(start - 3), out: outAt(0) });
   feed({ type: "reading", now: fmt(start - 2), tin: c.tin0, equip: "idle" });
-  feed({ type: "presence", now: fmt(start - 1), users: c.occupied ? ["u1"] : [] });
   let equipPrev: "heat" | "cool" | "idle" = "idle";
   const hourly: { heat: boolean; cool: boolean; heatMin: number; coolMin: number; changes: number; key: string | null; dirHeat: number; dirCool: number }[] = [];
   for (let m = 0; m < hours * 60; m += 5) {
@@ -79,10 +73,9 @@ export function runCase(c: SweepCase, hours = 6): SweepResult {
     if (tin > o.cool) { tin -= 0.25; equip = "cool"; r.coolMin += 5; }
     else if (tin < o.heat) { tin += 0.25; equip = "heat"; r.heatMin += 5; }
     if (equip !== "idle") r.hvacMin += 5;
-    // baseline: a programmed thermostat with the same setback when nobody is home
-    const sb = c.occupied ? c.seed : { heat: cfg.setback.heat, cool: cfg.setback.cool };
-    if (staticTin > sb.cool) { staticTin -= 0.25; r.staticHvacMin += 5; }
-    else if (staticTin < sb.heat) { staticTin += 0.25; r.staticHvacMin += 5; }
+    // baseline: a programmed thermostat at the seed range
+    if (staticTin > c.seed.cool) { staticTin -= 0.25; r.staticHvacMin += 5; }
+    else if (staticTin < c.seed.heat) { staticTin += 0.25; r.staticHvacMin += 5; }
     const at = fmt(now);
     // --- checks on this step's action against the output that caused it
     if (equip === "heat") {
@@ -90,14 +83,14 @@ export function runCase(c: SweepCase, hours = 6): SweepResult {
       hourly[hour].heatMin += 5;
       if (tin - 0.25 > o.band.cool) r.violations.push({ kind: "inverted", at, detail: `heating at ${tin.toFixed(1)} above band.cool ${o.band.cool}` });
       // heating to the setback floor is the floor doing its job, not a fight
-      if (outNow >= tin + 2 && o.heat > cfg.setback.heat && !o.protect && !o.reasons.includes("nudge")) r.violations.push({ kind: "fighting", at, detail: `heating at ${tin.toFixed(1)} with outdoor ${outNow.toFixed(1)} warmer (heat sp ${o.heat}, released ${o.released.heat})` });
+      if (outNow >= tin + 2 && o.heat > cfg.setback.heat && !o.protect && !o.reasons.includes("push")) r.violations.push({ kind: "fighting", at, detail: `heating at ${tin.toFixed(1)} with outdoor ${outNow.toFixed(1)} warmer (heat sp ${o.heat}, released ${o.released.heat})` });
       if (o.released.heat && o.heat > cfg.setback.heat) r.violations.push({ kind: "leak", at, detail: `heat released but heating (sp ${o.heat})` });
     }
     if (equip === "cool") {
       hourly[hour].cool = true;
       hourly[hour].coolMin += 5;
       if (tin + 0.25 < o.band.heat) r.violations.push({ kind: "inverted", at, detail: `cooling at ${tin.toFixed(1)} below band.heat ${o.band.heat}` });
-      if (outNow <= tin - 2 && o.cool < cfg.setback.cool && !o.protect && !o.reasons.includes("nudge")) r.violations.push({ kind: "fighting", at, detail: `cooling at ${tin.toFixed(1)} with outdoor ${outNow.toFixed(1)} cooler (cool sp ${o.cool}, released ${o.released.cool})` });
+      if (outNow <= tin - 2 && o.cool < cfg.setback.cool && !o.protect && !o.reasons.includes("push")) r.violations.push({ kind: "fighting", at, detail: `cooling at ${tin.toFixed(1)} with outdoor ${outNow.toFixed(1)} cooler (cool sp ${o.cool}, released ${o.released.cool})` });
       if (o.released.cool && o.cool < cfg.setback.cool) r.violations.push({ kind: "leak", at, detail: `cool released but cooling (sp ${o.cool})` });
     }
     equipPrev = equip;
@@ -125,7 +118,7 @@ export function runCase(c: SweepCase, hours = 6): SweepResult {
   // stranded: at the end, occupied, room outside the (occupied) band, equipment idle and nature not bringing it in
   const o = out!;
   const outside = tin > o.band.cool + 1.3 ? "hot" : tin < o.band.heat - 1.3 ? "cold" : null; // natureMargin + tolerance
-  if (c.occupied && !c.asleep && outside && equipPrev === "idle") {
+  if (outside && equipPrev === "idle") {
     // nature helps only if the outdoor air can actually carry the room into the band
     const outEnd = outAt(hours * 60);
     const natureHelps = outside === "hot" ? outEnd <= o.band.cool : outEnd >= o.band.heat;
@@ -140,15 +133,12 @@ export function grid(): SweepCase[] {
   const seeds = [{ heat: 18, cool: 22 }, { heat: 20, cool: 24.4 }, { heat: 22, cool: 26 }];
   for (const tin0 of [14, 16, 18, 20, 22, 24, 26, 28, 30, 32])
     for (const out of [-5, 0, 5, 10, 15, 20, 25, 30, 35, 40])
-      for (const seed of seeds)
-        for (const occupied of [true, false])
-          for (const asleep of occupied ? [false, true] : [false]) cases.push({ tin0, out, seed, occupied, asleep });
+      for (const seed of seeds) cases.push({ tin0, out, seed });
   // the outdoor air crossing the room temperature during the day: the release hysteresis under test
   for (const tin0 of [18, 20, 22, 24, 26])
     for (const out of [tin0 - 2, tin0, tin0 + 2])
       for (const swing of [3, 8])
-        for (const seed of seeds)
-          for (const occupied of [true, false]) cases.push({ tin0, out, seed, occupied, asleep: false, swing });
+        for (const seed of seeds) cases.push({ tin0, out, seed, swing });
   return cases;
 }
 
@@ -171,7 +161,7 @@ export function summarize(results: SweepResult[]): string {
   lines.push(kinds.map((k) => `${k}=${counts[k]}`).join("  "));
   for (const r of results.filter((x) => x.violations.length).slice(0, 40)) {
     const c = r.c;
-    lines.push(`  tin ${c.tin0} out ${c.out}${c.swing ? "±" + c.swing : ""} seed ${c.seed.heat}-${c.seed.cool} ${c.occupied ? (c.asleep ? "asleep" : "occupied") : "vacant"}: ` + [...new Set(r.violations.map((v) => `${v.kind} (${v.detail})`))].slice(0, 2).join("; "));
+    lines.push(`  tin ${c.tin0} out ${c.out}${c.swing ? "±" + c.swing : ""} seed ${c.seed.heat}-${c.seed.cool}: ` + [...new Set(r.violations.map((v) => `${v.kind} (${v.detail})`))].slice(0, 2).join("; "));
   }
   return lines.join("\n");
 }

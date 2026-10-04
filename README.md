@@ -18,38 +18,46 @@ from (`npm run sim`, `packages/core/test/sim.test.ts`).
 
 ## How it works, in plain words
 
-One loop, run on every event:
+The engine learns one thing per zone: the **tolerance curve** — the indoor
+temperature range the people who use the space accept, as a function of the
+outdoor temperature. It runs one loop on every event:
 
 ```
 sense → band → act → learn
 ```
 
-- **Sense.** The room temperature, the outdoor temperature, who is present (and
-  whether they're asleep), and votes — all supplied by your integration.
-- **Band.** Comfort is a range per person per time block: the coolest and the
-  warmest indoor temperature they accept. "Too hot" at 24.2 °C means their warm
-  limit is below 24.2; "too cold" teaches the other end. The band is the overlap
-  of everyone *present*, at the current **risk** level, and never wider than
-  your protection limits. Nobody home: the band is your setback.
-- **Act.** The device stays idle while the room is inside the band — or outside
-  it but drifting toward it on its own: a side the outdoor air is already
-  pushing the room away from is *released* (no heating while it's warmer out
-  than in, no cooling while it's cooler out than in). Otherwise it conditions to
-  the nearest edge. A device that can't do "auto" is told which side to run.
-- **Learn.** A vote moves that person's edge, is *felt* right away (the edge
-  ends a step past the room, Thermovote-style), resets risk on that side and
-  un-releases it for a while. Quiet time with people awake raises risk slowly,
-  widening the band toward what people are learned to tolerate. Sleep freezes
-  risk in place. Blocks split, merge and shift as votes show where preferences
-  really change.
+- **Sense.** The room temperature, the outdoor temperature, votes and manual
+  changes, all supplied by your integration.
+- **Band.** The curve read at the current outdoor temperature, at its safe
+  quantile. On a 38 °C day the accepted ceiling is what people said on 38 °C
+  days; on a 20 °C evening what they said then. Nothing in the configuration
+  says how comfort should bend with the weather — the curve is derived from
+  the population's votes, knot by knot, and it is not assumed to be linear.
+- **Act.** Idle inside the band. Outside it, a side the outdoor air is already
+  pushing the room toward is *released* (no heating while it's warmer out than
+  in, no cooling while it's cooler out than in — the air does the work);
+  otherwise condition to the nearest edge. A device without "auto" is told
+  which side to run. Setpoints change only when the wanted value has moved a
+  full step: the engine outputs a range, never a target temperature.
+- **Learn.** A vote teaches the knots at the outdoor temperature it was cast
+  at and is *felt* at once: the voted edge is pushed one step past the room,
+  then fades back into the learned band over a couple of quiet hours. Quiet
+  attended time is **exploration that decays with confidence**: while an edge
+  is uncertain it widens past the room; once the population has resolved it,
+  quiet moves nothing — so a confident night band holds whether or not anyone
+  is awake to vote. The engine also learns the zone's **thermal response** (how
+  fast the room drifts toward outdoor, how fast the equipment moves it) from
+  the readings, and uses it to tell a stalled vote from one still on its way,
+  to **project** a day's band, room and run time from the forecast, and to let
+  a zone that can correct fast explore faster.
 
-Everything is written once per *side* (heat/cool are the same rule with a sign),
-so there is no heating logic and no cooling logic — just the loop.
-
-It is deliberately *identity-agnostic* (users are opaque ids), *presence-agnostic*
-(you tell it who is here), and *device-agnostic* (you tell it what the device can
-do, it never actuates anything). Your integration owns all of that, plus site
-rules like "pre-cool before peak pricing".
+It is deliberately **identity-free** (a vote's user id is only for records),
+**presence-free** (your integration stops feeding it while nobody is home and
+decides what the equipment does then), **schedule-free** (no time of day; the
+hour a vote is cast matters less than the temperature and the band) and
+**device-agnostic** (you tell it what the device can do; it never actuates).
+Heat and cool are the same rule with a sign: there is no heating logic and no
+cooling logic, just the loop.
 
 ## What's here
 
@@ -66,7 +74,7 @@ Until it's on npm, install a release tarball (Menu → Manage palette → Instal
 upload, or in your Node-RED user directory):
 
 ```sh
-npm install https://github.com/MasonRhodesDev/open-comfort-engine/releases/download/v0.4.0/node-red-contrib-open-comfort-engine-0.4.0.tgz
+npm install https://github.com/MasonRhodesDev/open-comfort-engine/releases/download/v0.5.0-rc.1/node-red-contrib-open-comfort-engine-0.5.0-rc.1.tgz
 ```
 
 Import `examples/basic.json` from the package. Feed the `comfort-engine` node:

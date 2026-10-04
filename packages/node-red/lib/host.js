@@ -27,8 +27,9 @@ function zoneToC(z) {
   cap.minGap = dF(cap.minGap);
   cap.setpointStep = Math.round(dF(cap.setpointStep) * 1000) / 1000 || 0.1;
   for (const k of ["heat", "cool"]) cap[k] = { min: fToC(cap[k].min), max: fToC(cap[k].max) };
-  c.seed.blocks = c.seed.blocks.map((b) => ({ ...b, heat: fToC(b.heat), cool: fToC(b.cool) }));
+  c.seed = { heat: fToC(c.seed.heat), cool: fToC(c.seed.cool) };
   c.setback = { heat: fToC(c.setback.heat), cool: fToC(c.setback.cool) };
+  if (c.protect) c.protect = { ...(c.protect.min !== undefined ? { min: fToC(c.protect.min) } : {}), ...(c.protect.max !== undefined ? { max: fToC(c.protect.max) } : {}) };
   return c;
 }
 
@@ -36,7 +37,6 @@ const FEEDBACK_EN = {
   "nudge.cooler": "Cooling it down a bit for you.",
   "nudge.warmer": "Warming it up a bit for you.",
   "noted.cooldown": "Noted. Give it a few minutes to catch up.",
-  "noted.absent": "Noted. I'll remember that, but the room follows the people here.",
   "noted.no_reading": "Noted. I can't read the room temperature right now.",
 };
 

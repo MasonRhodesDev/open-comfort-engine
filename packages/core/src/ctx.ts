@@ -23,14 +23,14 @@ export class Ctx implements Grid {
   rec(type: EngineRecord["type"], fields: Record<string, unknown>): void {
     this.records.push({ type, at: this.nowStr, zone: this.cfg.id, ...fields });
   }
-  /** present users (empty until the host has said who is here) */
-  get present(): string[] {
-    return this.s.presence.known ? this.s.presence.users : [];
-  }
-  /** the last outdoor temperature if it is recent enough to act on (§7) */
+  /** the last outdoor temperature if it is recent enough to act on (§7.4) */
   get out(): number | null {
     const wx = this.s.weather;
     return wx && this.w.t - wx.at <= 3 * 60 * 60000 ? wx.out : null;
+  }
+  /** the outdoor temperature the band is read at: the last one ever received (§7.1) */
+  get outForBand(): number | null {
+    return this.s.weather ? this.s.weather.out : null;
   }
   get tin(): number | null {
     return this.s.reading ? this.s.reading.tin : null;

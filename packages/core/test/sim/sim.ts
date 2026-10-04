@@ -1,16 +1,19 @@
-// Household simulator: synthetic occupants with hidden "true" comfort ranges, a
-// first-order room model, and stochastic votes when someone is actually
-// uncomfortable. Deterministic (seeded). Used by sim.test.ts and the CLI.
-import { init, step, mulberry32, type EngineEvent, type Output, type State, type ZoneConfig } from "../../src";
+// Household simulator: synthetic occupants with hidden *true* tolerance curves that bend with
+// outdoor temperature, who cannot vote while asleep; a first-order room; a host that feeds the
+// engine only while someone is home. Deterministic (seeded). Used by sim.test.ts and the CLI.
+import { init, step, project, type EngineEvent, type Output, type State, type ZoneConfig } from "../../src";
+type PerSideNum = { heat: number; cool: number };
 
 export interface SimUser {
   uid: string;
-  /** true comfort range per hour of day, °C (indoor) */
-  range: (hour: number) => [number, number];
-  /** chance per hour of voting while uncomfortable */
+  /** true tolerance range as a function of outdoor temperature, °C indoor */
+  range: (out: number, hour: number) => [number, number];
+  /** chance per hour of voting while uncomfortable and awake */
   voteRate: number;
   /** home between these hours (local), every day */
   home: [number, number][];
+  /** asleep between these hours (cannot vote) */
+  asleep?: [number, number];
 }
 
 export interface SimOptions {
@@ -20,100 +23,111 @@ export interface SimOptions {
   seed?: number;
   /** outdoor temperature at a given day/hour */
   outdoor: (day: number, hour: number) => number;
+  /** true room physics: envelope coupling (1/h) and equipment rate (°C/h) */
+  thermal: { envelope: number; equipment: number };
   freezeAfterDay?: number;
-  /** whether the simulated integration supplies expectedArrival/expectedUsers (default true) */
-  predictArrivals?: boolean;
+  /** the host feeds the engine only while someone is home (default true) */
+  hostPresence?: boolean;
 }
 
 export interface DayStats {
   day: number;
   votes: number;
-  hot: number;
-  cold: number;
-  uncomfortableMin: number; // person-minutes outside their true range while home
-  hvacMin: number; // minutes the HVAC ran (energy proxy)
-  meanBand: number; // mean cool − heat while occupied
-  byHour: Record<string, number>; // uncomfortable person-minutes by `${uid}:${hour}:${dir}`
+  uncomfortableMin: number; // person-minutes outside their true range while home and awake
+  hvacMin: number; // minutes the HVAC ran
+  attendedMin: number; // minutes the engine was fed
+  degreeHours: number; // Σ |out − 18| per hour, a weather normaliser
+  bandWidth: number; // mean cool − heat while attended
+  curveRms: PerSideNum | null; // RMS error of the learned edges vs the population's true ones, at the day's outdoor temps
+  nightDrift: number | null; // |Δ band.cool| over the night (23:00–07:00), when nobody can vote
+  confidence: number; // mean cool-side confidence while attended
+}
+
+/** mulberry32: a small seeded PRNG for the simulator only (the engine has none). */
+function rng(seed: number) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
 export function simulate(o: SimOptions): { stats: DayStats[]; state: State; lastOutput: Output | null } {
-  let rngState = (o.seed ?? 7) >>> 0;
-  const rnd = () => {
-    const [v, n] = mulberry32(rngState);
-    rngState = n;
-    return v;
-  };
+  const rnd = rng(o.seed ?? 7);
   let s = init(o.config);
   let out: Output | null = null;
   let tin = 23;
   const stats: DayStats[] = [];
+  let night0: number | null = null;
   const fmt = (d: number, minute: number) => {
     const date = new Date(Date.UTC(2026, 5, 1 + d));
-    const hh = String(Math.floor(minute / 60)).padStart(2, "0");
-    const mm = String(minute % 60).padStart(2, "0");
-    return `${date.toISOString().slice(0, 10)}T${hh}:${mm}:00-07:00`;
+    return `${date.toISOString().slice(0, 10)}T${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}:00-07:00`;
   };
   const feed = (e: EngineEvent) => {
     const r = step(s, e, o.config);
     s = r.state;
     out = r.output;
   };
+  // the population's true tolerance: the tightest range over everyone who is ever home
+  const trueBand = (outT: number, hour: number): [number, number] => {
+    let lo = -Infinity, hi = Infinity;
+    for (const u of o.users) { const [a, b] = u.range(outT, hour); lo = Math.max(lo, a); hi = Math.min(hi, b); }
+    return [lo, hi];
+  };
   for (let d = 0; d < o.days; d++) {
-    const ds: DayStats = { day: d, votes: 0, hot: 0, cold: 0, uncomfortableMin: 0, hvacMin: 0, meanBand: 0, byHour: {} };
-    let bandSum = 0;
-    let bandN = 0;
+    const ds: DayStats = { day: d, votes: 0, uncomfortableMin: 0, hvacMin: 0, attendedMin: 0, degreeHours: 0, bandWidth: 0, curveRms: null, nightDrift: null, confidence: 0 };
+    let bandSum = 0, bandN = 0, rmsH = 0, rmsC = 0, rmsN = 0, confSum = 0;
     if (o.freezeAfterDay !== undefined && d === o.freezeAfterDay) feed({ type: "freeze", now: fmt(d, 0), on: true });
-    let lastPresent = "";
     for (let minute = 0; minute < 1440; minute += 5) {
       const hour = minute / 60;
-      const out_ = o.outdoor(d, hour);
-      const present = o.users.filter((u) => u.home.some(([a, b]) => hour >= a && hour < b)).map((u) => u.uid);
-      const key = present.join(",");
-      if (key !== lastPresent) {
-        // the integration's job in real life: predict who arrives next, and when (here: from the schedule)
-        let next: { at: number; users: string[] } | null = null;
-        for (const u of o.users) {
-          if (present.includes(u.uid)) continue;
-          for (let ahead = 5; ahead <= 1440; ahead += 5) {
-            const hh = ((minute + ahead) % 1440) / 60;
-            if (u.home.some(([a, b]) => hh >= a && hh < b)) {
-              if (!next || ahead < next.at) next = { at: ahead, users: [u.uid] };
-              else if (ahead === next.at) next.users.push(u.uid);
-              break;
-            }
-          }
-        }
-        const expectedArrival = next && o.predictArrivals !== false ? fmt(d + Math.floor((minute + next.at) / 1440), (minute + next.at) % 1440) : null;
-        feed({ type: "presence", now: fmt(d, minute), users: present, expectedArrival, expectedUsers: expectedArrival ? next!.users : [] });
-        lastPresent = key;
-      }
-      if (minute % 30 === 0) feed({ type: "weather", now: fmt(d, minute), out: out_ });
-      // room physics (5-min step): leak toward outdoor-ish, HVAC pushes back inside the band
-      const heat = out?.heat ?? 20;
-      const cool = out?.cool ?? 24;
+      const outT = o.outdoor(d, hour);
+      if (minute % 60 === 0) ds.degreeHours += Math.abs(outT - 18);
+      const home = o.users.filter((u) => u.home.some(([a, b]) => hour >= a && hour < b));
+      const attended = o.hostPresence === false || home.length > 0;
+      // room physics (5-min step): the engine's last output decides the equipment; the host turns it off when nobody is home
+      const heat = attended && out ? out.heat : o.config.setback.heat;
+      const cool = attended && out ? out.cool : o.config.setback.cool;
       let equip: "heat" | "cool" | "idle" = "idle";
-      tin += (0.6 * out_ + 0.4 * 24 - tin) * 0.02;
-      if (tin > cool) { tin -= 0.25; equip = "cool"; ds.hvacMin += 5; }
-      else if (tin < heat) { tin += 0.25; equip = "heat"; ds.hvacMin += 5; }
-      feed({ type: "reading", now: fmt(d, minute), tin: Math.round(tin * 100) / 100, equip });
-      if (present.length) { bandSum += cool - heat; bandN++; }
-      for (const u of o.users) {
-        if (!present.includes(u.uid)) continue;
-        const [lo, hi] = u.range(hour);
+      const dt = 5 / 60;
+      let rate = o.thermal.envelope * (outT - tin);
+      if (tin > cool) { rate -= o.thermal.equipment; equip = "cool"; }
+      else if (tin < heat) { rate += o.thermal.equipment; equip = "heat"; }
+      tin += rate * dt;
+      if (equip !== "idle") ds.hvacMin += 5;
+      if (attended) {
+        ds.attendedMin += 5;
+        if (minute % 10 === 0) feed({ type: "weather", now: fmt(d, minute), out: Math.round(outT * 10) / 10 });
+        feed({ type: "reading", now: fmt(d, minute), tin: Math.round(tin * 100) / 100, equip });
+        if (out) { bandSum += out.band.cool - out.band.heat; bandN++; confSum += out.confidence.cool; const [lo, hi] = trueBand(outT, hour); rmsC += (out.band.cool - hi) ** 2; rmsH += (out.band.heat - lo) ** 2; rmsN++; }
+      }
+      if (out && hour === 23 && minute % 60 === 0) night0 = out.band.cool;
+      if (out && night0 !== null && hour === 7 && minute % 60 === 0) { ds.nightDrift = Math.abs(out.band.cool - night0); night0 = null; }
+      for (const u of home) {
+        const [lo, hi] = u.range(outT, hour);
         const dir = tin > hi ? "hot" : tin < lo ? "cold" : null;
+        const asleep = u.asleep ? (u.asleep[0] > u.asleep[1] ? hour >= u.asleep[0] || hour < u.asleep[1] : hour >= u.asleep[0] && hour < u.asleep[1]) : false;
         if (!dir) continue;
-        ds.uncomfortableMin += 5;
-        const k = `${u.uid}:${Math.floor(hour)}:${dir}`;
-        ds.byHour[k] = (ds.byHour[k] || 0) + 5;
-        if (rnd() < u.voteRate * (5 / 60)) {
+        if (!asleep) ds.uncomfortableMin += 5;
+        if (!asleep && rnd() < u.voteRate * (5 / 60)) {
           feed({ type: "vote", now: fmt(d, minute), user: u.uid, dir, src: "sim" });
           ds.votes++;
-          if (dir === "hot") ds.hot++; else ds.cold++;
         }
       }
     }
-    ds.meanBand = bandN ? bandSum / bandN : 0;
+    ds.bandWidth = bandN ? bandSum / bandN : 0;
+    ds.confidence = bandN ? confSum / bandN : 0;
+    ds.curveRms = rmsN ? { heat: Math.sqrt(rmsH / rmsN), cool: Math.sqrt(rmsC / rmsN) } : null;
     stats.push(ds);
   }
   return { stats, state: s, lastOutput: out };
+}
+
+/** A projection of a sim day from the engine's state, for the projection check. */
+export function projectDay(s: State, cfg: ZoneConfig, d: number, outdoor: (day: number, hour: number) => number, tin: number) {
+  const date = new Date(Date.UTC(2026, 5, 1 + d)).toISOString().slice(0, 10);
+  const hours = Array.from({ length: 24 }, (_, h) => ({ now: `${date}T${String(h).padStart(2, "0")}:00:00-07:00`, out: Math.round(outdoor(d, h) * 10) / 10 }));
+  return project(s, cfg, { tin, hours });
 }

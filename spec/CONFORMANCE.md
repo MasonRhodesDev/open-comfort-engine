@@ -32,8 +32,8 @@ checked, so vectors pin what matters for that scenario.
 | value | tolerance |
 |---|---|
 | `heat`, `cool` (already rounded to `setpointStep`) | exact |
-| `mode`, `state`, `reasons`, `block`, feedback codes, record `type`/`action`/`dir`/`user` | exact |
-| any other number (shifts, drift, vacancy, confidence, sigma, quantiles, record numbers) | absolute 1e−6 |
+| `mode`, `state`, `reasons`, `released`, `protect`, feedback codes, record `type`/`dir`/`user`/`pushed` | exact |
+| any other number (band, push, confidence, delta, thermal rates, curve points, record numbers) | absolute 1e−6 |
 | snapshot | not compared directly; round-trip is tested by `restore` steps (below) |
 
 ## Special step

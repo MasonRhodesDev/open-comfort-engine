@@ -1,8 +1,8 @@
 // Property tests of the reference implementation against the spec's rules
 // (independent of the golden vectors).
 import { describe, expect, it } from "vitest";
-import { init, step, serialize, restore, phi, mulberry32, parseWhen, type State, type EngineEvent, type Output } from "../src";
-import { house } from "./fixtures";
+import { init, step, serialize, restore, project, phi, parseWhen, knots, params, type State, type EngineEvent, type Output } from "../src";
+import { house, office } from "./fixtures";
 import { scenarios } from "./scenarios";
 import { runScenario } from "./run";
 
@@ -18,252 +18,225 @@ function drive(events: EngineEvent[], config = house): { s: State; outs: Output[
   }
   return { s, outs, last };
 }
-/** a mild morning: outdoor within natureMargin of the room, so nothing is released */
-const base = (users = ["u1"], tin = 24.0, out = tin): EngineEvent[] => [
-  { type: "weather", now: at(1, "09:05"), out },
-  { type: "presence", now: at(1, "09:06"), users },
-  { type: "reading", now: at(1, "09:07"), tin, equip: "idle" },
+/** a start: outdoor, then a reading (within the attended gap) */
+const base = (tin = 24.0, out = tin, d = 1): EngineEvent[] => [
+  { type: "weather", now: at(d, "09:05"), out },
+  { type: "reading", now: at(d, "09:06"), tin, equip: "idle" },
 ];
 const lastOf = <T,>(xs: T[]) => xs[xs.length - 1];
+/** n quiet attended hours: a reading every 5 minutes */
+function quiet(hours: number, tin: number, from = "09:06", d = 1): EngineEvent[] {
+  const [h0, m0] = from.split(":").map(Number);
+  const evs: EngineEvent[] = [];
+  for (let m = 5; m <= hours * 60; m += 5) {
+    const mm = h0 * 60 + m0 + m;
+    evs.push({ type: "reading", now: at(d, `${String(Math.floor(mm / 60)).padStart(2, "0")}:${String(mm % 60).padStart(2, "0")}`), tin, equip: "idle" });
+  }
+  return evs;
+}
 
-describe("math (Appendix A, §8.5)", () => {
+describe("math (Appendix A)", () => {
   it("phi matches known values", () => {
     expect(phi(0)).toBeCloseTo(0.5, 7);
     expect(phi(1)).toBeCloseTo(0.8413447, 6);
     expect(phi(-1.96)).toBeCloseTo(0.0249979, 6);
-  });
-  it("mulberry32 sequence for seed 1", () => {
-    let st = 1;
-    const xs: number[] = [];
-    for (let i = 0; i < 3; i++) {
-      const [v, n] = mulberry32(st);
-      xs.push(v);
-      st = n;
-    }
-    expect(xs.map((x) => x.toFixed(10))).toEqual(["0.6270739406", "0.0027357212", "0.5274470400"]);
   });
   it("parses local time from the offset, no tz database", () => {
     const w = parseWhen("2026-10-02T09:15:30-07:00");
     expect(w.date).toBe("2026-10-02");
     expect(w.minute).toBeCloseTo(555.5, 9);
     expect(w.t).toBe(Date.UTC(2026, 9, 2, 16, 15, 30));
-    expect(w.offMin).toBe(-420);
+  });
+  it("knots span the configured outdoor range", () => {
+    expect(knots(params(house))).toEqual([-10, -5, 0, 5, 10, 15, 20, 25, 30, 35, 40, 45]);
   });
 });
 
-describe("band (§7.1)", () => {
-  it("cold start outputs the seed exactly (risk 0), and within one grid step a minute later", () => {
-    const { outs } = drive(base());
-    expect(outs[1].state).toBe("SEEDED");
-    expect(outs[1].cool).toBeCloseTo(24.4, 9);
-    expect(outs[1].heat).toBeCloseTo(20.0, 9);
-    expect(outs[1].reasons).toContain("seed");
-    const o = lastOf(outs);
-    expect(o.cool).toBeLessThanOrEqual(24.5 + 1e-9);
-    expect(o.heat).toBeGreaterThanOrEqual(19.9 - 1e-9);
-    expect(o.released).toEqual({ heat: false, cool: false });
-    expect(o.blockEnd).toBe("2026-07-01T16:00:00-07:00");
+describe("tolerance curve (§6)", () => {
+  it("cold start: the band is the seed at every outdoor temperature", () => {
+    for (const out of [-5, 12.5, 20, 38]) {
+      const o = lastOf(drive(base(22, out)).outs);
+      expect(o.band).toEqual({ heat: 20, cool: 24.4 });
+      expect(o.state).toBe("SEEDED");
+      expect(o.curve.length).toBe(12);
+    }
   });
-  it("the engine is identity-agnostic: renaming uids changes nothing", () => {
-    const ev = (u: string): EngineEvent[] => [...base([u], 24.2), { type: "vote", now: at(1, "09:20"), user: u, dir: "hot" }, { type: "tick", now: at(1, "12:00") }];
+  it("a vote teaches the knots around the outdoor temperature it was cast at, and no others", () => {
+    const { s, outs } = drive([...base(24.2, 37), { type: "vote", now: at(1, "09:20"), user: "u1", dir: "hot" }]);
+    const c = lastOf(outs).curve;
+    const hot = c.find((k) => k.out === 35)!;
+    const hot2 = c.find((k) => k.out === 40)!;
+    const mild = c.find((k) => k.out === 20)!;
+    expect(hot.cool).toBeLessThan(24.4);
+    expect(hot2.cool).toBeLessThan(24.4);
+    expect(mild.cool).toBe(24.4);
+    expect(mild.heat).toBe(20);
+    expect(s.curve.cool[9].n + s.curve.cool[10].n).toBeCloseTo(1, 9);
+  });
+  it("the curve bends with outdoor temperature when the population says so (derived, not defined)", () => {
+    // hot-day votes say 27 is fine, cool-day votes say 23 is too hot
+    const evs: EngineEvent[] = [];
+    for (let d = 1; d <= 8; d++) {
+      evs.push(...base(27.5, 38, d), { type: "vote", now: at(d, "09:20"), user: "a", dir: "hot" });
+      evs.push({ type: "weather", now: at(d, "21:00"), out: 18 }, { type: "reading", now: at(d, "21:01"), tin: 23.2, equip: "idle" }, { type: "vote", now: at(d, "21:10"), user: "a", dir: "hot" });
+    }
+    const c = lastOf(drive(evs).outs).curve;
+    const hot = c.find((k) => k.out === 40)!;
+    const cool = c.find((k) => k.out === 20)!;
+    expect(hot.cool).toBeGreaterThan(cool.cool + 2);
+  });
+  it("time of day is not a dimension: the same vote at 02:00 and 14:00 teaches the same thing", () => {
+    const a = drive([{ type: "weather", now: at(1, "02:00"), out: 30 }, { type: "reading", now: at(1, "02:01"), tin: 24.2, equip: "idle" }, { type: "vote", now: at(1, "02:10"), user: "u", dir: "hot" }]).s;
+    const b = drive([{ type: "weather", now: at(1, "14:00"), out: 30 }, { type: "reading", now: at(1, "14:01"), tin: 24.2, equip: "idle" }, { type: "vote", now: at(1, "14:10"), user: "u", dir: "hot" }]).s;
+    expect(b.curve).toEqual(a.curve);
+  });
+  it("the engine is identity-agnostic: the voter id changes nothing but the record", () => {
+    const ev = (u: string): EngineEvent[] => [...base(24.2), { type: "vote", now: at(1, "09:20"), user: u, dir: "hot" }, { type: "tick", now: at(1, "09:30") }];
     expect(drive(ev("x-9f2")).outs).toEqual(drive(ev("mason")).outs);
   });
-  it("the most sensitive present user wins each side", () => {
-    const evs: EngineEvent[] = [...base(["a", "b"], 24.2), { type: "vote", now: at(1, "09:20"), user: "a", dir: "hot" }, { type: "tick", now: at(1, "15:00") }];
-    const both = lastOf(drive(evs).outs);
-    const aloneB = lastOf(drive([...evs, { type: "presence", now: at(1, "15:01"), users: ["b"] }]).outs);
-    expect(both.band.cool).toBeLessThan(aloneB.band.cool);
-    expect(both.band.heat).toBeGreaterThanOrEqual(aloneB.band.heat - 1e-9);
+});
+
+describe("exploration decays with confidence (§6.3)", () => {
+  it("quiet attended hours widen an uncertain edge the room is near, past the room", () => {
+    const { outs } = drive([...base(24.0, 24), ...quiet(6, 25.0)]);
+    expect(lastOf(outs).band.cool).toBeGreaterThan(outs[1].band.cool + 0.3); // about 0.1 °C per quiet hour at the start
+    expect(lastOf(outs).band.heat).toBe(outs[1].band.heat); // the room is nowhere near the heat edge: no evidence about it
+    expect(lastOf(outs).reasons).not.toContain("push");
   });
-  it("nobody present: the band is the setback", () => {
-    const o = lastOf(drive([...base([]), { type: "tick", now: at(1, "12:00") }]).outs);
-    expect(o.state).toBe("VACANT");
-    expect(o.band).toEqual({ heat: house.setback.heat, cool: house.setback.cool });
+  it("a gap in events breaks the quiet streak: an empty house teaches nothing", () => {
+    const { s } = drive([...base(24.0, 24), { type: "reading", now: at(1, "15:00"), tin: 26, equip: "idle" }]);
+    const fresh = init(house);
+    expect(s.curve).toEqual(fresh.curve);
+  });
+  it("a confident edge is not moved by quiet: comfort persists through the night without votes", () => {
+    // make the cool edge at the 20 °C knot confident with many hot votes at 23.2
+    const evs: EngineEvent[] = [];
+    for (let d = 1; d <= 12; d++) {
+      evs.push(...base(23.2, 20, d), { type: "vote", now: at(d, "09:20"), user: "a", dir: "hot" });
+      evs.push({ type: "reading", now: at(d, "12:00"), tin: 23.2, equip: "idle" }, { type: "vote", now: at(d, "12:10"), user: "a", dir: "hot" });
+    }
+    const { s } = drive(evs);
+    const before = step(s, { type: "weather", now: at(13, "00:00"), out: 20 }, house);
+    const conf = before.output.confidence.cool;
+    // a quiet night: readings every 5 min, nobody votes
+    let r = step(before.state, { type: "reading", now: at(13, "00:01"), tin: 23.0, equip: "idle" }, house);
+    const c0 = r.output.band.cool;
+    for (const e of quiet(7, 23.0, "00:01", 13)) r = step(r.state, e, house);
+    expect(Math.abs(r.output.band.cool - c0)).toBeLessThan(house.capabilities.setpointStep * (1 - conf) + 0.05);
+  });
+  it("a zone that can correct faster explores faster", () => {
+    const fast = { ...house, params: { equipmentPrior: 6 } };
+    const slow = { ...house, params: { equipmentPrior: 0.5 } };
+    const f = lastOf(drive([...base(24.0, 24), ...quiet(4, 25.0)], fast).outs).band.cool;
+    const sl = lastOf(drive([...base(24.0, 24), ...quiet(4, 25.0)], slow).outs).band.cool;
+    expect(f).toBeGreaterThan(sl);
   });
 });
 
-describe("nudge (§7.2)", () => {
-  it("a vote is felt: the voted edge ends a step inward of the room, the other side is untouched", () => {
-    const before = lastOf(drive(base(["u1"], 24.2)).outs);
-    const { outs, last } = drive([...base(["u1"], 24.2), { type: "vote", now: at(1, "09:20"), user: "u1", dir: "hot" }]);
+describe("the felt vote (§4)", () => {
+  it("a vote pushes the voted edge a step inward of the room, the other side is untouched, and the push persists", () => {
+    const before = lastOf(drive(base(24.2)).outs);
+    const { outs, last } = drive([...base(24.2), { type: "vote", now: at(1, "09:20"), user: "u1", dir: "hot" }, { type: "tick", now: at(1, "09:25") }]);
     const o = lastOf(outs);
-    expect(last.effects.feedback).toBe("nudge.cooler");
+    expect(last.effects.feedback).toBeUndefined();
+    expect(outs[2].reasons).toContain("push");
     expect(o.cool).toBeLessThanOrEqual(24.2 - 1.0 + 1e-9);
     expect(o.heat).toBe(before.heat);
-    expect(o.nudge.heat).toBeNull();
+    expect(o.push.heat).toBeNull();
   });
-  it("a nudge belongs to the people who asked: it clears when the present set changes, and absent users don't nudge", () => {
-    const { s, last } = drive([...base(["u1"], 24.2), { type: "vote", now: at(1, "09:20"), user: "u1", dir: "hot" }, { type: "presence", now: at(1, "10:00"), users: [] }]);
-    expect(s.nudge.cool).toBeNull();
-    expect(last.output.cool).toBe(house.setback.cool);
-    const ghost = drive([...base(["u1"], 24.2), { type: "vote", now: at(1, "09:20"), user: "ghost", dir: "hot" }]);
-    expect(ghost.last.effects.feedback).toBe("noted.absent");
-    expect(ghost.s.nudge.cool).toBeNull();
-    expect(ghost.s.models.ghost.b0.n).toBe(1);
-  });
-  it("risk accrues only while someone is present", () => {
-    const { s } = drive([{ type: "weather", now: at(1, "08:00"), out: 24 }, { type: "reading", now: at(1, "08:01"), tin: 24, equip: "idle" }, { type: "presence", now: at(1, "09:00"), users: ["u1"] }]);
-    expect(s.risk.cool).toBe(0);
-  });
-  it("rejects a non-finite reading", () => {
-    const { s } = drive(base());
-    const r = step(s, { type: "reading", now: at(1, "10:00"), tin: NaN } as any, house);
-    expect(r.effects.records[0]).toMatchObject({ type: "rejected", reason: "value" });
-  });
-  it("a second vote inside the cooldown is noted, not acted on", () => {
-    const { last } = drive([...base(["u1"], 24.2), { type: "vote", now: at(1, "09:20"), user: "u1", dir: "hot" }, { type: "vote", now: at(1, "09:25"), user: "u1", dir: "hot" }]);
-    expect(last.effects.feedback).toBe("noted.cooldown");
-  });
-  it("a manual change inward becomes a nudge to that value; outward is ignored", () => {
-    const control = lastOf(drive([...base(["u1"], 24.0), { type: "tick", now: at(1, "10:00") }]).outs);
-    const o = lastOf(drive([...base(["u1"], 24.0), { type: "manual", now: at(1, "10:00"), applied: { cool: 22.5, heat: 18 } }]).outs);
-    expect(o.cool).toBe(22.5);
-    expect(o.heat).toBe(control.heat); // 22.5 − 20 ≥ minGap 1.6: the outward heat change is ignored
-    expect(o.nudge.heat).toBeNull();
-    expect(o.reasons).not.toContain("gap");
-  });
-  it("a manual change that breaks the device gap keeps the side that was set", () => {
-    const o = lastOf(drive([...base(["u1"], 24.0), { type: "manual", now: at(1, "10:00"), applied: { cool: 21.0 } }]).outs);
-    expect(o.cool).toBe(21.0);
-    expect(o.heat).toBeCloseTo(21.0 - house.capabilities.minGap, 9);
-  });
-  it("a complaint un-releases its side even when learning alone already covers the room", () => {
-    const { outs } = drive([...base(["u1"], 20.5, 31), { type: "vote", now: at(1, "09:20"), user: "u1", dir: "cold" }]);
-    const o = lastOf(outs);
-    expect(o.released.heat).toBe(false);
-    expect(o.heat).toBeGreaterThanOrEqual(20.5 + 1.0 - 1e-9);
-    // two users in conflict: u2's cold vote is still felt although the heat edge is above the target
-    const two = lastOf(drive([...base(["u1", "u2"], 22.5, 28), { type: "vote", now: at(1, "09:20"), user: "u1", dir: "hot" }, { type: "vote", now: at(1, "09:21"), user: "u2", dir: "cold" }]).outs);
-    expect(two.released.heat).toBe(false);
-    expect(two.heat).toBeGreaterThan(house.setback.heat);
-  });
-});
-
-describe("risk (§7.3)", () => {
-  it("grows while people are awake and quiet, widens the band, and a vote resets only its side", () => {
-    const evs: EngineEvent[] = [...base(["u1"], 22.0)];
-    for (const hh of ["10", "11", "12", "13"]) evs.push({ type: "tick", now: at(1, `${hh}:00`) });
-    const { s, outs } = drive(evs);
-    expect(s.risk.cool).toBeGreaterThan(0.95);
-    expect(s.risk.heat).toBe(s.risk.cool);
-    expect(lastOf(outs).band.cool).toBeGreaterThan(outs[2].band.cool);
-    expect(lastOf(outs).band.heat).toBeLessThan(outs[2].band.heat);
-    expect(lastOf(outs).reasons).toContain("risk");
-    const r = step(s, { type: "vote", now: at(1, "13:10"), user: "u1", dir: "hot" }, house);
-    expect(r.state.risk.cool).toBe(0);
-    expect(r.state.risk.heat).toBeGreaterThan(0.95);
-    expect(r.state.paused.cool).not.toBeNull();
-    expect(r.state.paused.heat).toBeNull();
-  });
-  it("is frozen in place while asleep, and resumes after", () => {
-    const cfg = { ...house, sleep: [{ start: "11:30", end: "13:30" }] };
-    const evs: EngineEvent[] = [...base(["u1"], 22.0), { type: "tick", now: at(1, "10:00") }, { type: "tick", now: at(1, "11:00") }];
-    const { s } = drive(evs, cfg);
-    const r0 = s.risk.cool;
-    expect(r0).toBeGreaterThan(0);
-    let r = step(s, { type: "tick", now: at(1, "12:00") }, cfg);
-    r = step(r.state, { type: "tick", now: at(1, "13:00") }, cfg);
-    expect(r.state.risk.cool).toBe(r0);
-    expect(r.output.reasons).toContain("sleep");
-    r = step(r.state, { type: "tick", now: at(1, "14:00") }, cfg);
-    expect(r.state.risk.cool).toBeGreaterThan(r0);
-  });
-  it("never passes the median: the band stops at what the person is learned to accept", () => {
-    const evs: EngineEvent[] = [...base(["u1"], 23.0), { type: "vote", now: at(1, "09:20"), user: "u1", dir: "hot" }];
-    for (let h = 10; h <= 15; h++) evs.push({ type: "reading", now: at(1, `${h}:00`), tin: 22.5, equip: "cool" });
+  it("the push is absorbed once the learned edge passes it, with no reset", () => {
+    // a manual push to 23.5, then votes that teach the edge below it
+    const evs: EngineEvent[] = [...base(24.0, 24), { type: "manual", now: at(1, "09:10"), applied: { cool: 22.5 } }];
+    for (let i = 1; i <= 6; i++) evs.push({ type: "reading", now: at(1, `${9 + i}:20`), tin: 22.0, equip: "cool" }, { type: "vote", now: at(1, `${9 + i}:30`), user: "u1", dir: "hot" });
     const { outs } = drive(evs);
-    for (const o of outs.slice(4)) expect(o.band.cool).toBeLessThan(23.0);
+    expect(outs[2].push.cool).toBe(22.5);
+    expect(lastOf(outs).band.cool).toBeLessThan(22.5);
+    // the manual push is gone (absorbed); what remains is the latest vote's own push, inward of the band
+    expect(lastOf(outs).push.cool === null || (lastOf(outs).push.cool as number) < lastOf(outs).band.cool).toBe(true);
+  });
+  it("a repeat vote inside the cooldown counts only if the room is stalled", () => {
+    const moving = drive([...base(24.2, 24), { type: "vote", now: at(1, "09:20"), user: "u1", dir: "hot" }, { type: "reading", now: at(1, "09:35"), tin: 23.6, equip: "cool" }, { type: "vote", now: at(1, "09:36"), user: "u1", dir: "hot" }]);
+    expect(moving.last.effects.feedback).toBe("noted.cooldown");
+    const stalled = drive([...base(24.2, 24), { type: "vote", now: at(1, "09:20"), user: "u1", dir: "hot" }, { type: "reading", now: at(1, "09:35"), tin: 24.2, equip: "idle" }, { type: "vote", now: at(1, "09:36"), user: "u1", dir: "hot" }]);
+    expect(stalled.last.effects.feedback).toBe("nudge.cooler");
+  });
+  it("a manual change inward is a push to that value and a weak lesson; outward is ignored; not a complaint", () => {
+    const o = lastOf(drive([...base(24.0, 24), { type: "manual", now: at(1, "09:10"), applied: { cool: 22.5, heat: 18 } }]).outs);
+    expect(o.cool).toBe(22.5);
+    expect(o.heat).toBe(20);
+    const rel = lastOf(drive([...base(20.5, 31), { type: "manual", now: at(1, "09:10"), applied: { heat: 21.5 } }, { type: "tick", now: at(1, "09:15") }]).outs);
+    expect(rel.released.heat).toBe(true);
+  });
+  it("a complaint un-releases its side", () => {
+    const o = lastOf(drive([...base(20.5, 31), { type: "vote", now: at(1, "09:20"), user: "u1", dir: "cold" }]).outs);
+    expect(o.released.heat).toBe(false);
+    expect(o.heat).toBeGreaterThanOrEqual(21.5 - 1e-9);
   });
 });
 
 describe("nature (§7.4)", () => {
-  it("the 09:00 furnace case: a room below the heat edge but warming from outside is not heated", () => {
-    const o = lastOf(drive(base(["u1"], 20.5, 31)).outs);
+  it("the 09:00 furnace case: a room just below the heat edge, warming from outside, is not heated", () => {
+    const o = lastOf(drive(base(19.9, 31)).outs);
     expect(o.released).toEqual({ heat: true, cool: false });
     expect(o.heat).toBe(house.setback.heat);
-    expect(o.cool).toBeCloseTo(24.4, 9);
-    expect(o.reasons).toContain("released");
+    expect(o.cool).toBe(24.4);
   });
-  it("the mirror: a warm room cooling from outside is not cooled; cooling never released on a hot day", () => {
-    const o = lastOf(drive(base(["u1"], 26, 18)).outs);
-    expect(o.released).toEqual({ heat: false, cool: true });
-    expect(o.cool).toBe(house.setback.cool);
-    const hot = lastOf(drive(base(["u1"], 26, 35)).outs);
-    expect(hot.released.cool).toBe(false);
+  it("the mirror: cooling is never released on a hot day; it is on a cool evening", () => {
+    expect(lastOf(drive(base(26, 35)).outs).released.cool).toBe(false);
+    expect(lastOf(drive(base(26, 18)).outs).released).toEqual({ heat: false, cool: true });
   });
-  it("hysteresis: released at +margin, un-released at −margin; jitter inside the band changes nothing", () => {
-    let { s } = drive(base(["u1"], 22, 23.5));
-    expect(s.released.heat).toBe(true);
-    let r = step(s, { type: "weather", now: at(1, "10:00"), out: 22.5 }, house);
+  it("hysteresis: jitter inside the margin cannot flap a side", () => {
+    let r = drive(base(22, 23.5)).last;
     expect(r.state.released.heat).toBe(true);
-    r = step(r.state, { type: "weather", now: at(1, "10:10"), out: 21.4 }, house);
-    expect(r.state.released.heat).toBe(true); // crossed zero, still inside the margin
-    r = step(r.state, { type: "weather", now: at(1, "10:30"), out: 20.9 }, house);
+    for (let i = 0; i < 12; i++) {
+      r = step(r.state, { type: "weather", now: at(1, `10:${String(i * 4 + 1).padStart(2, "0")}`), out: i % 2 ? 22.6 : 21.4 }, house);
+      expect(r.state.released.heat).toBe(true);
+    }
+    r = step(r.state, { type: "weather", now: at(1, "11:00"), out: 20.9 }, house);
     expect(r.state.released.heat).toBe(false);
-    r = step(r.state, { type: "weather", now: at(1, "11:00"), out: 22.5 }, house);
-    expect(r.state.released.heat).toBe(false); // inside the margin: nothing changes
-    // jitter around the room temperature never flaps
-    for (let i = 0; i < 12; i++) { r = step(r.state, { type: "weather", now: at(1, `${11 + Math.floor(i / 4)}:${String((i % 4) * 15 + 5).padStart(2, "0")}`), out: i % 2 ? 22.6 : 21.4 }, house); expect(r.state.released.heat).toBe(false); expect(r.output.heat).toBeGreaterThan(house.setback.heat); }
   });
-  it("a manual change is not a complaint: it does not un-release, a vote does", () => {
-    const o = lastOf(drive([...base(["u1"], 20.5, 31), { type: "manual", now: at(1, "09:20"), applied: { heat: 21.5 } }, { type: "tick", now: at(1, "09:30") }]).outs);
-    expect(o.released.heat).toBe(true);
-    expect(o.heat).toBe(house.setback.heat);
-  });
-  it("nobody is stranded: the air does what it can, then the device takes over (14 °C room, 15 °C out, band 18)", () => {
-    const cfg = { ...house, seed: { blocks: [{ start: "00:00", heat: 18, cool: 22 }] } };
-    let r = drive(base(["u1"], 14, 15), cfg).last;
-    expect(r.output.released.heat).toBe(true); // the air is warming the room for free
-    r = step(r.state, { type: "reading", now: at(1, "10:00"), tin: 14.95, equip: "idle" }, cfg);
-    expect(r.output.released.heat).toBe(false); // caught up with the air, still outside the band: heat
-    expect(r.output.heat).toBeGreaterThanOrEqual(17.8); // the edge, less an hour of risk
-    // with the air inside the band, the room resting at the air's temperature is fine: stays released
-    r = drive(base(["u1"], 14, 19), cfg).last;
-    r = step(r.state, { type: "reading", now: at(1, "10:00"), tin: 18.95, equip: "idle" }, cfg);
+  it("nobody is stranded: the air does what it can, then the device takes over", () => {
+    const cfg = { ...house, seed: { heat: 18, cool: 22 } };
+    let r = drive(base(14, 15), cfg).last;
     expect(r.output.released.heat).toBe(true);
+    r = step(r.state, { type: "reading", now: at(1, "09:10"), tin: 14.95, equip: "idle" }, cfg);
+    expect(r.output.released.heat).toBe(false);
+    expect(r.output.heat).toBe(18);
   });
-  it("stale or missing weather releases nothing", () => {
-    const o = lastOf(drive([...base(["u1"], 20.5, 31), { type: "tick", now: at(1, "13:00") }]).outs);
+  it("stale weather releases nothing", () => {
+    const o = lastOf(drive([...base(19.9, 31), { type: "reading", now: at(1, "13:00"), tin: 19.9, equip: "idle" }]).outs);
     expect(o.released.heat).toBe(false);
   });
 });
 
-describe("pre-conditioning (§7.5)", () => {
-  it("an expected arrival pulls the vacant band in ahead of time", () => {
-    const evs: EngineEvent[] = [
-      { type: "weather", now: at(1, "12:00"), out: 30 },
-      { type: "reading", now: at(1, "12:01"), tin: 28, equip: "idle" },
-      { type: "presence", now: at(1, "12:02"), users: [], expectedArrival: at(1, "15:00"), expectedUsers: ["u1"] },
-      { type: "tick", now: at(1, "12:10") },
-      { type: "tick", now: at(1, "14:30") },
-    ];
-    const { outs } = drive(evs);
-    expect(outs[3].cool).toBe(house.setback.cool);
-    expect(outs[4].cool).toBeCloseTo(24.4, 9);
-    expect(outs[4].reasons).toContain("precondition");
+describe("thermal response (§2b)", () => {
+  it("learns the envelope from idle intervals and the equipment rate from running ones", () => {
+    const evs: EngineEvent[] = [{ type: "weather", now: at(1, "09:00"), out: 30 }];
+    let tin = 20;
+    let m = 0;
+    for (; m < 120; m += 10) { evs.push({ type: "reading", now: at(1, `${9 + Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}`), tin: Math.round(tin * 100) / 100, equip: "idle" }); tin += 0.5 * (30 - tin) * (10 / 60); }
+    for (; m < 240; m += 10) { evs.push({ type: "reading", now: at(1, `${9 + Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}`), tin: Math.round(tin * 100) / 100, equip: "cool" }); tin += (0.5 * (30 - tin) - 3) * (10 / 60); }
+    const { s } = drive(evs);
+    expect(s.thermal.envelope).toBeGreaterThan(0.38); // moving from the 0.3 prior toward 0.5
+    expect(s.thermal.cool).toBeGreaterThan(2.2); // moving from the 2.0 prior toward 3 at thermalForget per interval
   });
 });
 
 describe("protection (§7.6)", () => {
-  const office = { ...house, id: "office", capabilities: { ...house.capabilities, modes: ["heat", "cool", "off"] as const, setpointStep: 0.5 },
-    seed: { blocks: [{ start: "00:00", heat: 19, cool: 24.5 }] }, setback: { heat: 15, cool: 30 }, protect: { min: 10, max: 29.4 } } as any;
-  it("an empty office in a heat wave: the setback is clamped (inward rounding), protect engages and releases with hysteresis", () => {
-    const evs: EngineEvent[] = [{ type: "weather", now: at(1, "12:00"), out: 40 }, { type: "presence", now: at(1, "12:01"), users: [] }];
-    evs.push({ type: "reading", now: at(1, "13:00"), tin: 29.6, equip: "idle" });
-    evs.push({ type: "reading", now: at(1, "13:30"), tin: 29.0, equip: "cool" });
-    evs.push({ type: "reading", now: at(1, "14:00"), tin: 28.3, equip: "cool" });
+  it("an empty office in a heat wave: cooling capped at max (inward rounding), protect engages and releases with hysteresis", () => {
+    const evs: EngineEvent[] = [{ type: "weather", now: at(1, "12:00"), out: 40 }, { type: "reading", now: at(1, "12:01"), tin: 29.6, equip: "idle" },
+      { type: "reading", now: at(1, "12:06"), tin: 29.0, equip: "cool" }, { type: "reading", now: at(1, "12:11"), tin: 28.3, equip: "cool" }];
     const { outs } = drive(evs, office);
     for (const o of outs) expect(o.cool).toBeLessThanOrEqual(29.0 + 1e-9);
+    expect(outs[1].protect).toBe("max");
+    expect(outs[1].mode).toBe("cool");
     expect(outs[2].protect).toBe("max");
-    expect(outs[2].mode).toBe("cool");
-    expect(outs[3].protect).toBe("max");
-    expect(outs[4].protect).toBe(null);
+    expect(outs[3].protect).toBe(null);
   });
   it("protection overrides release and freeze", () => {
-    const cfg = { ...house, protect: { max: 26 } } as any;
-    const o = lastOf(drive([...base(["u1"], 27, 20), { type: "freeze", now: at(1, "09:10"), on: true }, { type: "tick", now: at(1, "09:20") }], cfg).outs);
+    const cfg = { ...house, protect: { max: 26 } };
+    const o = lastOf(drive([...base(27, 20), { type: "freeze", now: at(1, "09:10"), on: true }, { type: "tick", now: at(1, "09:12") }], cfg).outs);
     expect(o.cool).toBeLessThanOrEqual(26);
-    expect(o.reasons).toContain("protect");
     expect(o.protect).toBe("max");
   });
 });
@@ -281,47 +254,59 @@ describe("output rules (§7.8)", () => {
       }
     }
   });
-  it("a device without auto gets the side the room is outside of, else the side opposing the outdoor air", () => {
-    const cfg = { ...house, capabilities: { ...house.capabilities, modes: ["heat", "cool", "off"] } } as any;
-    expect(lastOf(drive(base(["u1"], 26, 30), cfg).outs).mode).toBe("cool");
-    expect(lastOf(drive(base(["u1"], 18, 10), cfg).outs).mode).toBe("heat");
-    expect(lastOf(drive(base(["u1"], 22, 30), cfg).outs).mode).toBe("cool");
-    expect(lastOf(drive(base(["u1"], 22, 10), cfg).outs).mode).toBe("heat");
-    // inside the band with the outdoor air jittering around the room: the mode keeps its side
-    let r = drive(base(["u1"], 22, 22.1), cfg).last;
+  it("a device without auto gets the side the room is outside of, else keeps its side", () => {
+    expect(lastOf(drive(base(26, 30), office).outs).mode).toBe("cool");
+    expect(lastOf(drive(base(18, 10), office).outs).mode).toBe("heat");
+    let r = drive(base(22, 22.1), office).last;
     const m0 = r.output.mode;
-    for (let i = 0; i < 6; i++) { r = step(r.state, { type: "weather", now: at(1, `10:${String(i * 5 + 5).padStart(2, "0")}`), out: i % 2 ? 21.9 : 22.1 }, cfg); expect(r.output.mode).toBe(m0); }
+    for (let i = 0; i < 6; i++) { r = step(r.state, { type: "weather", now: at(1, `10:${String(i * 5 + 5).padStart(2, "0")}`), out: i % 2 ? 21.9 : 22.1 }, office); expect(r.output.mode).toBe(m0); }
   });
-  it("freeze stops learning and risk but votes still nudge", () => {
-    const { s, last } = drive([...base(), { type: "freeze", now: at(1, "09:10"), on: true }, { type: "vote", now: at(1, "09:20"), user: "u1", dir: "hot" }, { type: "tick", now: at(1, "13:00") }]);
-    expect(s.models.u1.b0.n).toBe(0);
-    expect(s.risk.cool).toBe(0);
+  it("freeze stops learning and exploration but votes still push (and the push fades over complaintMin of quiet)", () => {
+    const { s, outs, last } = drive([...base(24.2), { type: "freeze", now: at(1, "09:10"), on: true }, { type: "vote", now: at(1, "09:20"), user: "u1", dir: "hot" }, ...quiet(2, 24.2, "09:20")]);
+    expect(s.curve).toEqual(init(house).curve);
     expect(last.output.state).toBe("FROZEN");
-    expect(last.output.nudge.cool).not.toBeNull();
+    expect(outs[3].cool).toBeLessThanOrEqual(24.2 - 1.0 + 1e-9);
+    expect(outs[outs.length - 13].cool).toBeGreaterThan(outs[3].cool); // an hour in: half way back
+    expect(last.output.cool).toBe(24.4); // two hours of quiet: the push has faded into the learned edge
+  });
+  it("delta from ambient and the curve are reported", () => {
+    const o = lastOf(drive(base(22, 35)).outs);
+    expect(o.deltaFromAmbient.cool).toBeCloseTo(24.4 - 35, 9);
+    expect(o.curve.find((k) => k.out === 35)!.coolSigma).toBeGreaterThan(1);
+  });
+});
+
+describe("projection (§7.9)", () => {
+  it("a projected day uses the same band and act as step: matching inputs give matching setpoints", () => {
+    const { s } = drive([...base(24.2, 30), { type: "vote", now: at(1, "09:20"), user: "u1", dir: "hot" }, { type: "tick", now: at(1, "12:00") }]);
+    const hours = Array.from({ length: 12 }, (_, i) => ({ now: at(2, `${String(8 + i).padStart(2, "0")}:00`), out: 22 + 10 * Math.sin((i / 12) * Math.PI) }));
+    const rows = project(s, house, { tin: 23, hours });
+    expect(rows.length).toBe(12);
+    for (const row of rows) {
+      const live = step({ ...s, released: row.released, push: { heat: null, cool: null }, complaintAt: { heat: null, cool: null } }, { type: "weather", now: row.now, out: row.out }, house);
+      expect(live.output.band).toEqual(row.band);
+      expect(row.deltaFromAmbient.cool).toBeCloseTo(row.band.cool - row.out, 9);
+    }
+    expect(rows.some((r) => r.equipment === "cool" && r.runMin > 0)).toBe(true);
   });
 });
 
 describe("state machine (§5, §9)", () => {
   it("snapshot round-trip is transparent", () => {
-    const evs: EngineEvent[] = [...base(["a", "b"], 24.2), { type: "vote", now: at(1, "09:20"), user: "a", dir: "hot" }];
-    const tail: EngineEvent[] = [{ type: "tick", now: at(1, "11:00") }, { type: "vote", now: at(1, "11:30"), user: "b", dir: "cold" }, { type: "tick", now: at(1, "13:00") }];
+    const evs: EngineEvent[] = [...base(24.2), { type: "vote", now: at(1, "09:20"), user: "a", dir: "hot" }];
+    const tail: EngineEvent[] = [...quiet(2, 23.5, "09:20"), { type: "vote", now: at(1, "11:30"), user: "b", dir: "cold" }, { type: "tick", now: at(1, "11:35") }];
     const straight = drive([...evs, ...tail]).outs.slice(-3);
     let s = drive(evs).s;
     s = restore(JSON.parse(JSON.stringify(serialize(s))));
-    const resumed = tail.map((e) => { const r = step(s, e, house); s = r.state; return r.output; });
+    const resumed = tail.map((e) => { const r = step(s, e, house); s = r.state; return r.output; }).slice(-3);
     expect(resumed).toEqual(straight);
   });
-  it("a version-1 snapshot restores: models and blocks survive, the loop's state starts fresh", () => {
-    const s = drive([...base(["u1"], 24.2), { type: "vote", now: at(1, "09:20"), user: "u1", dir: "hot" }]).s;
-    const v1: any = { ...JSON.parse(JSON.stringify(s)), snapshotVersion: 1, drift: { value: 0.4, pausedUntil: null }, vacancy: { since: null, value: 0, recovering: false },
-      hold: null, trm: 22, day: { date: "2026-07-01", sum: 0, n: 0, hl: null }, lastShift: {}, nudge: { delta: -1, blockId: "b0" } };
-    delete v1.risk; delete v1.released; delete v1.paused;
-    const r = restore(v1);
-    expect(r.snapshotVersion).toBe(2);
-    expect(r.models.u1.b0.n).toBe(1);
-    expect(r.risk).toEqual({ heat: 0, cool: 0 });
-    expect(r.paused).toEqual({ heat: null, cool: null });
-    expect((r as any).drift).toBeUndefined();
+  it("an older snapshot restores to a fresh curve with the room and weather carried over", () => {
+    const old: any = { snapshotVersion: 2, zone: "house", reading: { tin: 23, rh: null, equip: "idle", applied: null, at: 1 }, weather: { out: 30, high: null, low: null, at: 1 }, frozen: false, protecting: null, risk: { heat: 0.5, cool: 0.5 } };
+    const r = restore(old, house);
+    expect(r.snapshotVersion).toBe(3);
+    expect(r.reading!.tin).toBe(23);
+    expect(r.curve).toEqual(init(house).curve);
     expect(() => step(r, { type: "tick", now: at(1, "10:00") }, house)).not.toThrow();
   });
   it("step() does not mutate its input state", () => {
@@ -330,19 +315,14 @@ describe("state machine (§5, §9)", () => {
     step(s0, base()[0], house);
     expect(JSON.stringify(s0)).toBe(copy);
   });
-  it("rejects out-of-order and unknown events without changing state", () => {
+  it("rejects out-of-order, unknown and non-finite events without changing state", () => {
     const { s } = drive(base());
     const r1 = step(s, { type: "tick", now: at(1, "08:00") }, house);
     expect(r1.effects.records[0]).toMatchObject({ type: "rejected", reason: "time" });
     expect(r1.state).toEqual(s);
     const r2 = step(s, { type: "nope", now: at(1, "10:00") } as unknown as EngineEvent, house);
     expect(r2.effects.records[0]).toMatchObject({ type: "rejected", reason: "type" });
-  });
-  it("splits a block whose votes disagree by time of day", () => {
-    const sc = scenarios.find((x) => x.name === "split")!;
-    const ran = runScenario(sc);
-    const splits = ran.flatMap((r) => r.effects.records).filter((x) => x.type === "blocks" && (x as any).action === "split");
-    expect(splits.length).toBe(1);
-    expect((splits[0] as any).blocks.map((b: any) => b.start)).toContain(11 * 60);
+    const r3 = step(s, { type: "reading", now: at(1, "10:00"), tin: NaN } as any, house);
+    expect(r3.effects.records[0]).toMatchObject({ type: "rejected", reason: "value" });
   });
 });

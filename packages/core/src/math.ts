@@ -96,19 +96,6 @@ export function forget(w: number[], prior: number[], f: number): number[] {
   return w.map((x, i) => (1 - f) * x + f * prior[i]);
 }
 
-export function product(a: number[], b: number[]): number[] {
-  return normalize(a.map((x, i) => x * b[i]));
-}
-
-/** §8.5 mulberry32. Returns [value in [0,1), next state]. */
-export function mulberry32(state: number): [number, number] {
-  const s = (state + 0x6d2b79f5) >>> 0;
-  let t = s;
-  t = Math.imul(t ^ (t >>> 15), t | 1);
-  t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-  return [((t ^ (t >>> 14)) >>> 0) / 4294967296, s];
-}
-
 export const clamp = (x: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, x));
 
 /** §2: round to a setpoint step toward the inside of the band (sign +1: down, −1: up), exact output. */

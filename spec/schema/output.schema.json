@@ -1,21 +1,21 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/MasonRhodesDev/open-comfort-engine/spec/schema/output.schema.json",
-  "title": "Engine output (spec \u00a77.10)",
+  "title": "Output (spec \u00a77.8)",
   "type": "object",
   "required": [
     "heat",
     "cool",
     "mode",
     "state",
-    "block",
-    "blockEnd",
     "band",
     "released",
-    "risk",
-    "nudge",
+    "push",
     "reasons",
     "confidence",
+    "deltaFromAmbient",
+    "thermal",
+    "curve",
     "protect"
   ],
   "properties": {
@@ -38,79 +38,8 @@
         "SEEDED",
         "LEARNING",
         "CONVERGED",
-        "FROZEN",
-        "VACANT"
+        "FROZEN"
       ]
-    },
-    "block": {
-      "type": "string"
-    },
-    "reasons": {
-      "type": "array",
-      "items": {
-        "enum": [
-          "seed",
-          "learned",
-          "conflict",
-          "nudge",
-          "risk",
-          "vacant",
-          "released",
-          "precondition",
-          "frozen",
-          "sleep",
-          "protect",
-          "limit",
-          "gap"
-        ]
-      }
-    },
-    "confidence": {
-      "type": "number",
-      "minimum": 0,
-      "maximum": 1
-    },
-    "nudge": {
-      "type": "object",
-      "required": [
-        "heat",
-        "cool"
-      ],
-      "additionalProperties": false,
-      "properties": {
-        "heat": {
-          "oneOf": [
-            {
-              "type": "null"
-            },
-            {
-              "type": "number"
-            }
-          ]
-        },
-        "cool": {
-          "oneOf": [
-            {
-              "type": "null"
-            },
-            {
-              "type": "number"
-            }
-          ]
-        }
-      }
-    },
-    "protect": {
-      "enum": [
-        "max",
-        "min",
-        null
-      ]
-    },
-    "blockEnd": {
-      "type": "string",
-      "description": "RFC 3339 start of the next block",
-      "pattern": "^\\d{4}-\\d{2}-\\d{2}[Tt ]\\d{2}:\\d{2}(:\\d{2}(\\.\\d+)?)?([Zz]|[+-]\\d{2}:\\d{2})$"
     },
     "band": {
       "type": "object",
@@ -144,7 +73,53 @@
         }
       }
     },
-    "risk": {
+    "push": {
+      "type": "object",
+      "required": [
+        "heat",
+        "cool"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "heat": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
+        "cool": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        }
+      }
+    },
+    "reasons": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "seed",
+          "learned",
+          "frozen",
+          "conflict",
+          "push",
+          "released",
+          "protect",
+          "limit",
+          "gap"
+        ]
+      }
+    },
+    "confidence": {
       "type": "object",
       "required": [
         "heat",
@@ -159,7 +134,98 @@
           "type": "number"
         }
       }
+    },
+    "deltaFromAmbient": {
+      "type": "object",
+      "required": [
+        "heat",
+        "cool"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "heat": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
+        "cool": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        }
+      }
+    },
+    "thermal": {
+      "type": "object",
+      "required": [
+        "envelope",
+        "heat",
+        "cool"
+      ],
+      "properties": {
+        "envelope": {
+          "type": "number"
+        },
+        "heat": {
+          "type": "number"
+        },
+        "cool": {
+          "type": "number"
+        }
+      }
+    },
+    "curve": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "out",
+          "heat",
+          "cool",
+          "heatSigma",
+          "coolSigma"
+        ],
+        "properties": {
+          "out": {
+            "type": "number"
+          },
+          "heat": {
+            "type": "number"
+          },
+          "cool": {
+            "type": "number"
+          },
+          "heatSigma": {
+            "type": "number"
+          },
+          "coolSigma": {
+            "type": "number"
+          }
+        }
+      }
+    },
+    "protect": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "enum": [
+            "max",
+            "min"
+          ]
+        }
+      ]
     }
-  },
-  "additionalProperties": false
+  }
 }

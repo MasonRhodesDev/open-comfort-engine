@@ -31,19 +31,19 @@
   <p><code>msg.payload</code> is an event (<code>{type, ...}</code>), or <code>msg.topic</code> is the type and <code>msg.payload</code> its fields. <code>now</code> defaults to the current time.</p>
   <dl class="message-properties">
     <dt>vote</dt><dd><code>{user, dir: "hot"|"cold", src?}</code> — <code>user</code> is any id string; the engine never interprets it.</dd>
-    <dt>presence</dt><dd><code>{users: [...], expectedArrival?, expectedUsers?}</code> — who is here now; optionally who you expect next, and when.</dd>
     <dt>reading</dt><dd><code>{tin, rh?, equip?, applied?: {heat, cool, mode}}</code> — room temperature and what the device is actually set to.</dd>
     <dt>weather</dt><dd><code>{out, high?, low?}</code></dd>
     <dt>cost</dt><dd><code>{level: 0..1}</code> relative energy price.</dd>
-    <dt>manual</dt><dd><code>{applied}</code> someone set the device by hand: learned as a weak vote. Your flow owns any hold (just don't actuate the output while it holds; <code>blockEnd</code> tells you when the engine's block ends).</dd>
-    <dt>freeze</dt><dd><code>{on}</code> "we've got this": stop learning and risk.</dd>
-    <dt>tick</dt><dd>heartbeat (or set Tick).</dd>
+    <dt>manual</dt><dd><code>{applied}</code> someone set the device by hand: learned as a weak vote and felt. Your flow owns any hold (just don't actuate the output while it holds).</dd>
+    <dt>freeze</dt><dd><code>{on}</code> "we've got this": stop learning and exploration.</dd>
+    <dt>project</dt><dd><code>{tin, hours: [{now, out}, …]}</code> a day's outdoor forecast: output 1 gets <code>msg.projection</code> — per hour the band, the predicted room temperature, what the air releases, the equipment side and run minutes, and the delta from ambient. No state change.</dd>
+    <dt>tick</dt><dd>heartbeat (or set Tick). Feed the engine (ticks and readings) only while someone is home: a gap in events is how it knows nobody was there to complain.</dd>
     <dt>restore</dt><dd><code>{snapshot}</code> from output 3.</dd>
   </dl>
   <h3>Outputs</h3>
   <ol class="node-ports">
-    <li>Setpoints: <code>msg.payload = {heat, cool, mode, state, units, released: {heat, cool}, protect, blockEnd}</code>, <code>msg.engine</code> = full output (band, risk, nudge, reasons). While <code>protect</code> is set you must actuate even if your own rules would leave the device off. Sent when they change, on the first step after a (re)start and after a restore; or on every step if configured.</li>
-    <li>Records (votes, decisions, conflicts, block changes) to log anywhere.</li>
+    <li>Setpoints: <code>msg.payload = {heat, cool, mode, state, units, released: {heat, cool}, protect, thermal}</code>, <code>msg.engine</code> = full output (band, push, confidence, deltaFromAmbient, curve, reasons). While <code>protect</code> is set you must actuate even if your own rules would leave the device off. Sent when they change, on the first step after a (re)start and after a restore; or on every step if configured.</li>
+    <li>Records (votes, decisions) to log anywhere.</li>
     <li>Snapshot of the full state: store it and send it back as a <code>restore</code> event on start.</li>
     <li>Feedback for the voter: <code>msg.topic</code> = code, <code>msg.payload</code> = English text (never numbers).</li>
   </ol>

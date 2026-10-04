@@ -15,7 +15,7 @@ for (const sc of scenarios) {
     if ("roundtrip" in st) { lines.push(JSON.stringify({ roundtrip: true })); continue; }
     const r = ran[i++];
     const effects: Record<string, unknown> = {
-      records: r.effects.records.map((x) => ({ type: x.type, ...(x.type === "blocks" ? { action: (x as any).action } : {}), ...(x.type === "vote" ? { user: (x as any).user, dir: (x as any).dir, updated: (x as any).updated, step: (x as any).step, nudge: (x as any).nudge } : {}) })),
+      records: r.effects.records.map((x) => ({ type: x.type, ...(x.type === "vote" ? { user: (x as any).user, dir: (x as any).dir, updated: (x as any).updated, pushed: (x as any).pushed, step: (x as any).step } : {}) })),
     };
     if (r.effects.feedback) effects.feedback = r.effects.feedback;
     lines.push(JSON.stringify({ event: st, expect: { output: r.output, effects } }));
