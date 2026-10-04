@@ -527,7 +527,9 @@ export function project(state: State, config: ZoneConfig, day: ProjectionDay): P
     const tin0 = tin;
     for (let m = 0; m < minutes; m += 5) {
       const dt = Math.min(5, minutes - m) / 60;
-      const side = SIDES.find((sd) => !released[sd.key] && inwardOf(sd, sd.key === "heat" ? a.heat : a.cool, tin) < 0 && (a.mode === "auto" || a.mode === sd.key)) ?? null;
+      // a side runs when the room is outside its setpoint and the side is not released — or protection is
+      // clamping it, since hosts MUST actuate then (§7.6)
+      const side = SIDES.find((sd) => (!released[sd.key] || protecting === sd.limit) && inwardOf(sd, sd.key === "heat" ? a.heat : a.cool, tin) < 0 && (a.mode === "auto" || a.mode === sd.key)) ?? null;
       const equip: Equip | null = side ? side.key : null;
       tin += expectedChange(th, dt, out - tin, equip);
       if (side) { runMin += dt * 60; equipment = side.key; }
