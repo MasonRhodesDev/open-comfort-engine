@@ -105,13 +105,25 @@ gain     = clamp((sy − envelope·sx) / N, −10, 10)
 
 The prior is `thermalPriorHours` (default 2) of pseudo-observations on the line
 `rate = envelopePrior·x` (gain 0), half at `x = +3` and half at `x = −3`, added to the
-statistics at every read rather than stored in them: it is never forgotten, so the denominator
-is never zero and a room whose `out − tin` barely varies (the office, attended) keeps the
-prior slope while the intercept absorbs the observed drift. With no data it reads back exactly
-today's priors. The `|out − tin| ≥ 1` guard goes: a small `x` cannot tell the slope, and the
-regression knows that — it informs the intercept instead, which is exactly the number release
-needs at that operating point. Running intervals update `equipment[side]` as today, net of the
-full idle model (`σ·(idle(out, tin) − rate)`, same clamps).
+statistics whenever the rates are evaluated rather than stored in them: it is never forgotten,
+so the denominator is never zero. With no data it reads back exactly today's priors. With
+data, the *prediction* at the operating point follows the data; the prior decides how the fit
+splits it between slope and intercept and pulls it toward `rate = envelopePrior·x` by at most
+`h/(h+n)` of the disagreement (a sixth at the defaults once `n` has saturated at
+`1/thermalForget`) — it does not hold the slope at the prior, as a first draft of this claimed.
+The `|out − tin| ≥ 1` guard goes: a small `x` cannot tell the slope, and the regression knows
+that — it informs the intercept instead, which is exactly the number release needs at that
+operating point. Running intervals update `equipment[side]` as today, net of the full idle
+model (`σ·(idle(out, tin) − rate)`, floor 0.1, cap 20).
+
+From the adversarial review (2026-10-07), three guards that are gates on constants already in
+the spec, not rules: an interval whose `|rate|` exceeds what any admissible line can produce
+(`5·|x| + 10` idle, `+ 20` running, from the clamps) is a sensor fault and teaches nothing —
+otherwise one glitch reading (the Midea's raw 255 = 102.5 °C is finite) saturates a knot for
+ten hours of evidence; an interval without `equip` teaches nothing (a running interval
+learned as drift would now feed release); nothing is learned while `FROZEN` (§7.7 always said
+so; rc.4's reference never did, hidden by the `|x| ≥ 1` guard). And one disambiguation: the
+fitted `(envelope_k, gain_k)` are interpolated between knots, never the statistics.
 
 What this is not: a configured internal-gain figure (physics is learned, like everything else
 in §6.5), a time-of-day term (the engine has no clock; the knots over outdoor temperature carry
@@ -137,14 +149,25 @@ today — is the room being carried away from this edge, and would it be carried
 asked of the learned model instead of the raw air. Well-conditioned: `push` is bounded by the
 learned rates, so a 0.1 °C/h wobble in `gain` moves it by 0.1 °C/h. `natureMargin` (°C)
 becomes **`natureRate`** (°C/h, default **0.3** = today's 1 °C margin × `envelopePrior`, range
-0.05–2); hysteresis is `±natureRate`. With `gain = 0` and `envelope` at its prior the rule is
+0.1–2 — the floor raised from 0.05 in review: the prior's pull on a settled room is ≈ 0.07 °C/h
+toward its line, and the threshold must sit above that); hysteresis is `±natureRate`. With `gain = 0` and `envelope` at its prior the rule is
 exactly today's; once a zone has taught its envelope it differs by design — a leaky zone
 releases at a 1 °C outdoor difference, a tight one only at several, which is what "the air is
 doing the work" has to mean in a tight room.
 
 The 30-min dwell, the complaint exemption and the stale-weather rule stay exactly as written.
 §7.3's stall test and §7.9's projection already integrate the thermal model, so they take
-`gain` with no further change and stay consistent with `act`.
+`gain` with no further change and stay consistent with `act`. One new property, named in the
+spec: `reach` has no hysteresis and now moves with every reading as the model learns, not
+only with the weather, so a room settling exactly at its edge can change state once per
+dwell; the dwell is the only defence, and the simulator's flapping criterion counts release
+changes per hour (§6).
+
+Measured on a fresh knot (review's replay of record 517 at priors, +3 °C/h, 0.5 °C steps):
+cooling is released at t = 0 exactly as rc.4 did, un-release is wanted at 20 min via
+`reach < 0` and applied at 30 min by the dwell, room 27.0 °C. On a taught knot: never
+released. rc.4: until the weather crossed. That 30 minutes is the first-encounter cost, and
+the number §6's "no stranding" is judged against.
 
 *Considered and rejected: the equilibrium form* — substitute `T_idle = out + gain/envelope`
 for `out` in today's tests, keeping `natureMargin` in °C. Identical to today at `gain = 0`, but
@@ -167,7 +190,26 @@ flips every time the room crosses a setpoint (a device in `auto` would write a r
 snapshot every few minutes), and hosts receive it on every output.
 Hosts whose device has an `off` mode MAY apply `off` while `equipment` is `idle`; `mode`
 remains the device setting the engine would leave armed. The house in `auto` idles by itself
-and needs nothing. Vectors pin `equipment`.
+and needs nothing. A host that maps idle to off takes over the device's own cycle control
+(`equipment` has no hysteresis or minimum run time: the office at 0.5 °C resolution and
+2 °C/h of gain would see ~80 compressor starts a day) and SHOULD apply its own minimum on and
+off times. Vectors pin `equipment`.
+
+**The act and mode rules themselves changed in review** (blocking finding B1, plus S1). As
+first drafted — and as rc.4's mode rule already was — a side that is released was "not in the
+device's hands", so on a device without `auto` the engine could never name it: the office
+with cooling released at setback 29 and the room at 29.6 (past `protect.max` 29.4) would
+output `mode heat, protect "max", equipment idle` — §7.6's MUST with nothing to actuate, which
+is why the office host carries a `protect ? 'cool' : mode` workaround. Now, written once:
+`side` = the side whose output setpoint the room is past (a released side's setpoint *is* its
+setback, a clamped one's *is* the limit), else the side protection holds; `mode` = `auto`, else
+`side`, else the previous mode (hysteresis, released or not), else `heading`; `equipment` =
+`side` when the mode allows it. And `heading` — the side the room is drifting toward,
+`cool` if `idle(out, tin) > 0` — replaces the raw air vector (`out > tin`) in both the gap
+tie-break and the mode fall-through, so the loop has one notion of which way the room is
+going (identical at priors). Behaviour change: a device without `auto` holds its setback
+floor and ceiling (design.md: "that is the floor's job") and its protection limit without
+host help; the office incident's output is unchanged (idle either way).
 
 §4, `reading.equip`: one sentence tightened — *what the equipment actually ran since the
 previous reading, from the equipment's own state (power, compressor), never inferred from its
@@ -186,6 +228,14 @@ mode*. A duty field (`equipMin`) for short-cycling units is deferred (§8, item 
 - Replay the office's `comfort_records` readings through the new model offline and check the
   learned `envelope`/`gain` at the 25 °C knot against the two rows in Context before trusting
   the live number.
+- The office's `tin` is the unit's intake sensor. Its rebound after a run (+2 °C in ten
+  minutes, footnote 1) is learned as gain — at twenty episodes a day that is enough to drive
+  the knot's `gain` to its +10 clamp, after which cooling is never released while attended and
+  heating always is (harmless in summer; the sign flips in winter). The spec cannot see a
+  sensor artefact. Feed `tin` from a room sensor (the office has Zigbee sensors), or accept
+  that the office's gain is the sensor's.
+- When the host maps `idle → off`, it owns the unit's cycle: minimum on and off times in
+  `office_climate.py` (the pre-cool short-cycling in §7 is the same problem).
 
 ## 6. Verification before release
 
@@ -193,8 +243,10 @@ mode*. A duty field (`equipMin`) for short-cycling units is deferred (§8, item 
    with `gain = 0` and `envelope` held at its prior, the new release rule reproduces today's
    `nature-release` decisions step for step (the vector is then re-pinned with learning on).
 2. Simulator: an office-like zone (`envelope` 0.05, attended `gain` 1–3 °C/h, sensor quantised to
-   0.5 °C, 3-min episodes) — no release while the room's own drift points outward, no stranding,
-   no flapping; the house sim's release-on/off comparison (design.md) re-run with `gain` 0.3 to
+   0.5 °C, 3-min episodes) — no release while the room's own drift points outward, no stranding
+   (the fresh-knot first encounter above is the bound: un-released within one dwell), no
+   flapping (release changes per hour, since `reach` now moves with the model); the house
+   sim's release-on/off comparison (design.md) re-run with `gain` 0.3 to
    put a number on the house cost. Also re-run design.md's "thermal response learned within a
    week": forgetting is now per hour of evidence, so an equipment rate's memory is
    `1/thermalForget` hours *of running*, which for a unit that runs twenty minutes a day is
@@ -210,10 +262,18 @@ mode*. A duty field (`equipMin`) for short-cycling units is deferred (§8, item 
 - **Spec** 0.5.0-rc.5: §3.4 (`natureRate` replaces `natureMargin`; `thermalPriorHours`), §4 (`equip` sentence),
   §6.5 (source term, estimator), §7.4 (release reads the model), §7.8 (`equipment`; §10 says
   it is not a decision trigger),
-  §9 snapshot v4 (per-knot statistics; migration restarts the thermal model and keeps the curve).
-  Vectors: `thermal`, `nature-release`, `stall-reactuates` re-pinned; a new `idle-gain` vector.
-- **Reference**: `thermal.ts` (statistics, fit, `idle()`), `engine.ts` `act()` (two lines),
-  output type, snapshot migration; sim zone with a gain.
+  §9 snapshot v4 (per-knot statistics; a v3 snapshot keeps its equipment rates — same meaning —
+  and starts the idle statistics at zero, which needs the config; CONFORMANCE's runner passes it).
+  Vectors: **all twelve re-pin** (every one pins `thermal` and has a reading; with the `|x| ≥ 1`
+  guard gone any idle pair moves envelope/gain), `gain` pinned in every thermal object, the
+  FROZEN steps of `freeze` pinned at priors; a new `idle-gain` vector (the review sketched it:
+  record 517 replayed, released at priors, taken back by `reach` after the dwell, the act
+  published) and a `migrate-v3` vector.
+- **Reference**: `thermal.ts` (statistics, fit, `idle()`, the admissibility gate), `engine.ts`
+  `act()` (release, `side`/`heading`/mode/equipment), `onReading` gated on `frozen`, output
+  type, snapshot v4 + migration; tests: `core.test.ts` cool-rate expectation (per-hour
+  forgetting), `sim.test.ts`/`sim/cli.ts` `natureMargin: 99` → `natureRate: 99` (silently
+  ignored otherwise — the "static" baseline would keep release on), sim zone with a gain.
 - **home-flows**: §5 first; then `office_climate.py` maps `equipment: idle → off` (one line)
   and drops the dead `mode === "off"` branch; `comfort.py` metrics add `rate="gain"`.
   Separately observed, not this ADR: the vacant pre-cool for the work window short-cycles the
@@ -235,8 +295,16 @@ Also taken 2026-10-07 (may still move in PR review):
    `auto` must not be told to switch off).
 2. **No `equipMin`** for now: the single `equip` with the host fix; revisit if the office's
    equipment rates still do not learn after a week of correct attribution.
-3. Defaults: `thermalPriorHours` 2 h, `natureRate` 0.3 °C/h (range 0.05–2), gain clamp
+3. Defaults: `thermalPriorHours` 2 h, `natureRate` 0.3 °C/h (range 0.1–2), gain clamp
    ±10 °C/h.
 
-Sequence from here: this ADR → the spec diff (§7, reviewed before code) → reference
+Applied from the adversarial review of the spec diff (2026-10-07; open to veto in PR review):
+
+4. The act and mode rules of §4 (`side` / `heading`; a released side holds its setback; the
+   drift's sign replaces the air vector in the gap tie-break and mode fall-through).
+5. Three learning gates (§2): inadmissible rate → nothing; no `equip` → nothing; `FROZEN` →
+   nothing. Equipment-rate floor 0.1 (the reference's, now the spec's).
+6. v3 snapshots keep their equipment rates; `restore` takes the config.
+
+Sequence from here: this ADR → the spec diff (§7, adversarially reviewed) → reference
 implementation, vectors, sim → rc.5 → the home-flows prerequisite (§5) and host changes.

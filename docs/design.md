@@ -218,3 +218,11 @@ rc.5 adds the term the room was missing and reads release off the model instead 
 - The host's `equip` must come from the equipment's own state: the office had been reporting
   ESPHome's `action`, which reads 0 while the compressor runs, so every cooling run had been
   learned as air (the office's equipment rates never left their prior).
+- The act and mode rules were rewritten in the adversarial review of the spec diff: a released
+  side's setpoint is its setback and the equipment runs when the room passes it, so a device
+  without `auto` holds its floor, ceiling and protection limit without host help (rc.4 could
+  not name a released side at all); and "which way the room is heading" is the drift's sign in
+  every place that asks. Three learning gates came from the same review (an inadmissible rate,
+  a missing `equip`, `FROZEN`: each teaches nothing).
+- The thermal-response numbers above ("learned within a week", 0.15/h, 3.0 °C/h) are rc.2's
+  and are stale under per-hour forgetting until re-measured.
