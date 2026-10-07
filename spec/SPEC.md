@@ -1,6 +1,6 @@
 # Open Comfort Engine — Specification
 
-Version: **0.5.0-rc.4** (release candidate)
+Version: **0.5.0-rc.5** (release candidate)
 Status: normative. The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are
 to be interpreted as described in RFC 2119.
 
@@ -28,15 +28,16 @@ sense  →  band  →  act  →  learn
   current outdoor temperature, read from the learned curve at its safe
   quantile, never wider than the configured protection limits.
 - **Act**: the device stays idle while the room is inside the band, or outside
-  it but drifting toward it by itself (the outdoor air is doing the work).
-  Otherwise the device conditions the room to the nearest edge of the band.
+  it but drifting toward it by itself (the outdoor air, and whatever the room
+  makes or loses on its own, are doing the work). Otherwise the device
+  conditions the room to the nearest edge of the band.
 - **Learn**: a vote moves the curve at the outdoor temperature it was cast at
   and is felt at once; quiet attended time, while the curve is still uncertain,
   widens it; nothing else moves the band.
 
 Idle is the default. Energy is saved by two things only: the band is as wide as
 the population has shown it tolerates, and a side of the band whose job the
-outdoor air is already doing is released.
+room's own drift is already doing is released.
 
 The engine is a pure state machine:
 
@@ -131,9 +132,9 @@ the seed restarts the curve (§6.1).
 
 ### 3.4 Parameters (`params`, all optional)
 
-Defaults are normative. Hosts MAY override within the allowed range. Every
-parameter is a learning rate, a prior or a device/physics constant; none is a
-comfort value.
+Defaults are normative. Hosts MAY override within the allowed range; a value
+outside it is clamped to the range. Every parameter is a learning rate, a
+prior or a device/physics constant; none is a comfort value.
 
 | name | default | range | used in |
 |---|---|---|---|
@@ -151,12 +152,13 @@ comfort value.
 | `stepInit` / `stepMin` / `stepMax` / `stepGrow` | 1.0 / 0.3 / 2.0 / 1.25 | °C | §7.3 |
 | `cooldownMin` | 30 | — | §7.3 |
 | `repeatWindowMin` | 120 | — | §7.3 |
-| `natureMargin` | 1.0 | 0.3–3 | §7.4 |
+| `natureRate` | 0.3 | 0.1–2 (°C/h) | §7.4 |
 | `releaseDwellMin` | 30 | 0–120 | §7.4 |
 | `complaintMin` | 120 | — | §7.2, §7.4, §7.8 |
 | `envelopePrior` | 0.3 | /h | §6.5 |
 | `equipmentPrior` | 2.0 | °C/h | §6.5 |
-| `thermalForget` | 0.1 | 0.01–0.5 | §6.5 |
+| `thermalForget` | 0.1 | 0.01–0.5 (per hour of evidence) | §6.5 |
+| `thermalPriorHours` | 2 | 0.5–24 | §6.5 |
 | `convergedSigma` | 0.6 | — | §5.2 |
 | `convergedVotes` | 20 | — | §5.2 |
 | `protectHysteresis` | 1.0 | 0.2–3 | §7.6 |
@@ -171,7 +173,7 @@ rejected with a `{type:"rejected", reason:"type"}` record.
 | type | fields | meaning |
 |---|---|---|
 | `vote` | `user`, `dir: "hot"\|"cold"`, `src?` | someone says they are too hot / too cold. `user` is an opaque id for records and the step search; `src` is provenance for records only; the engine MUST NOT branch on either |
-| `reading` | `tin`, `rh?`, `equip?: "heat"\|"cool"\|"fan"\|"idle"\|"off"`, `applied?: {heat?, cool?, mode?}` | the room now; `equip` is what the equipment has been doing **since the previous reading** (§6.5); `applied` what the device is actually set to |
+| `reading` | `tin`, `rh?`, `equip?: "heat"\|"cool"\|"fan"\|"idle"\|"off"`, `applied?: {heat?, cool?, mode?}` | the room now; `equip` is what the equipment has been doing **since the previous reading** (§6.5), taken from the equipment's own state — compressor or burner running, measured power — never inferred from its mode or setpoint (a unit in cool mode with its compressor off is `idle`). Hosts SHOULD send it — an interval without it teaches the thermal model nothing (§6.5) — and SHOULD send a reading at least every 10 min while feeding, changed or not (§6.5 learns only from intervals of 1–30 min); `applied` what the device is actually set to |
 | `weather` | `out`, `high?`, `low?` | outdoor temperature now (and today's forecast extremes, recorded only). Hosts SHOULD send it at least every 10 min: release (§7.4) follows the last value and ignores one older than 3 h |
 | `manual` | `applied: {heat?, cool?, mode?}` | someone changed the device directly. Learned as a weak vote and felt (§7.3); the **host** owns any hold and its timeout and simply does not actuate the engine's output while it holds |
 | `freeze` | `on: boolean` | "we've got this": stop all learning and exploration (§7.7) |
@@ -190,7 +192,8 @@ rejected with a `{type:"rejected", reason:"type"}` record.
 - `complaintAt` — per side, when the last complaint was made (§7.4, §7.8).
 - `released` — per side booleans, and `releasedAt` when each last changed (§7.4).
 - `frozen` — boolean. `protecting` — `"max"`, `"min"` or null (§7.6).
-- `thermal` — `{envelope[], heat[], cool[]}`, the learned thermal response per knot (§6.5).
+- `thermal` — per knot: the idle-drift statistics `{n, sx, sy, sxx, sxy}` and each side's
+  equipment rate — the learned thermal response (§6.5).
 - `lastOutput`, `lastEventAt`, `lastSnapshotAt`.
 
 ### 5.2 States
@@ -317,28 +320,68 @@ After every vote or manual update, on the updated knots:
 The zone's physics, learned from consecutive readings 1–30 min apart with a
 current (≤ 3 h) outdoor temperature. The rate of change is variable, so it is learned
 as a **curve over outdoor temperature** on the same knots as the tolerance
-curve — the envelope coupling and each side's equipment rate per knot,
-interpolated like the curve (§6.1) and started from the priors:
+curve — the room's idle drift (its coupling to the outdoor air, and what it
+makes or loses on its own) and each side's equipment rate per knot. The
+rates at an outdoor temperature — `envelope(out)`, `gain(out)`,
+`equipment[side](out)` — are the §6.1 interpolation of the two knots'
+**fitted** values; the statistics below are never interpolated. Not while
+`FROZEN` (§7.7).
 
 ```
-idle:     dtin/dt = envelope(out) · (out − tin)                          # envelope: 1/h
-running:  dtin/dt = envelope(out) · (out − tin) − σ · equipment[side](out)  # equipment: °C/h, net of the envelope
+idle:     dtin/dt = idle(out, tin) = envelope(out) · (out − tin) + gain(out)   # envelope: 1/h ; gain: °C/h
+running:  dtin/dt = idle(out, tin) − σ · equipment[side](out)                   # equipment: °C/h, net of the idle drift
 ```
+
+`gain` is the heat the room makes or loses by itself at that outdoor
+temperature — people, their equipment, sun through the glass, the ground
+under a basement. It is learned, never configured: a room's idle drift is a
+line in `out − tin` whose slope is the envelope and whose intercept is the
+gain, and both are read off the same readings.
 
 `reading.equip` says what the equipment has been doing **since the previous
-reading**, so the interval it closes is attributed to it. Per interval of
-`dtH` hours at outdoor `out`, with `rate = Δtin/dtH` and
-`delta = out − tin_previous`, each of the two knots around `out` is updated
-with forgetting `f = thermalForget · wt` (`wt` its interpolation weight):
+reading**, so the interval it closes is attributed to it: `idle`, `fan` or
+`off` to the idle drift, `heat` or `cool` to that side; an interval without
+`equip` teaches nothing (a running interval learned as drift would feed
+release, §7.4). Per interval of `dtH` hours at outdoor `out`, with
+`rate = Δtin/dtH` and `x = out − tin_previous`, each of the two knots around
+`out` is updated with weight `w = wt · dtH` (`wt` its interpolation weight:
+an interval is as much evidence as it is long) and forgetting
+`f = thermalForget · w`. An interval whose `|rate|` exceeds what any
+admissible line can produce — `5·|x| + 10` idle (the envelope and gain
+clamps), `5·|x| + 30` running (plus the equipment clamp) — is a sensor fault
+and teaches nothing:
 
-- idle (or `fan`/`off`/unknown): if `|delta| ≥ 1`,
-  `envelope_k ← (1 − f)·envelope_k + f·clamp(rate/delta, 0, 5)`;
+- idle: the knot's idle statistics
+  ```
+  n ← (1 − f)·n + w ;  sx ← (1 − f)·sx + w·x ;  sy ← (1 − f)·sy + w·rate ;
+  sxx ← (1 − f)·sxx + w·x² ;  sxy ← (1 − f)·sxy + w·x·rate
+  ```
+  and its rates are the least-squares line through them and the prior (below):
+  ```
+  N = n + h ;  SXX = sxx + 9h ;  SXY = sxy + 9h · envelopePrior          # h = thermalPriorHours
+  envelope_k = clamp( (N·SXY − sx·sy) / (N·SXX − sx²), 0.02, 5 )
+  gain_k     = clamp( (sy − envelope_k·sx) / N, −10, 10 )
+  ```
 - running on a side: `equipment[side]_k ← (1 − f)·equipment[side]_k +
-  f·clamp(σ·(envelope_k·delta − rate), 0, 20)`.
+  f·clamp(σ·(envelope_k·x + gain_k − rate), 0.1, 20)` (a floor, never zero:
+  a mislabelled interval can pull a rate down, and it recovers).
 
-So the rate of change is derived from the delta from ambient, and an
-equipment whose capacity fades in the heat (a heat pump, a window unit) is
-seen as such. The model is used for stall detection (§7.3), the projection
+The prior is `thermalPriorHours` of pseudo-observations on the line
+`rate = envelopePrior · x` (gain 0), half at `x = +3` and half at `x = −3`,
+added to the statistics whenever the rates are evaluated — never stored,
+never forgotten. The statistics themselves start at zero (`n` is effective
+hours of evidence; it saturates near `1/thermalForget`). With no data this
+reads back exactly `envelope = envelopePrior`, `gain = 0`. With data, the
+prediction `idle(out, tin)` at the operating point follows the data; the
+prior decides how the fit splits it between slope and intercept, and pulls
+the prediction toward `rate = envelopePrior · x` by at most `h/(h + n)` of
+the disagreement (one sixth at the defaults once `n` has saturated). The
+denominator is never zero (it is at least `9h²`). No interval is too close
+to outdoor to count.
+
+So the rate of change is derived from the delta from ambient and from what
+the room does on its own, and an equipment whose capacity fades in the heat
+(a heat pump, a window unit) is seen as such. The model is used for stall detection (§7.3), the projection
 (§7.9) and the exploration weight (§6.3), and reported to hosts at the
 current outdoor temperature (`output.thermal`) and per knot
 (`output.curve[].thermal`) for their own pre-conditioning and for graphs.
@@ -348,7 +391,10 @@ current outdoor temperature (`output.thermal`) and per knot
 All of §7 is written for one side; it runs for both (§1.1). `tin` is the last
 reading; `out` is the last outdoor temperature (for release, §7.4, only if
 received within the last 3 h); the band is read at the last outdoor
-temperature ever received, or at the middle of the knot range if none.
+temperature ever received, or at the middle of the knot range if none. The
+thermal model (§6.5) is read at the same outdoor temperature as the rule
+that uses it: release (§7.4) at the ≤ 3 h value, `output.thermal` at the
+band's.
 
 ### 7.1 Band
 
@@ -402,31 +448,42 @@ push to `target = applied[side]`. A manual change is **not** a complaint: no
 
 ### 7.4 Nature (release)
 
-The outdoor air pushes the room along the vector `out − tin`. A side the room
-is being pushed **away from**, by air that can bring the room inside that
-edge on its own, has nothing to do: it is released to `setback` and the air
-does the work. It is taken back when the air pushes the other way or can no
-longer reach the edge. With `push = σ·(out − tin)` (negative: the air pushes
-the room away from this edge) and `reach = σ·(edge − out)` (negative: the
-outdoor temperature is outside this edge):
+The room drifts on its own at `idle(out, tin)` °C/h (§6.5): the outdoor air
+through the envelope, plus what the room makes or loses by itself. A side the
+room is drifting **away from**, by a drift that would carry it inside that
+edge on its own, has nothing to do: it is released to `setback` and the drift
+does the work. It is taken back when the drift turns or can no longer reach
+the edge. With `drift = σ·idle(out, tin)` (negative: the room drifts away
+from this edge) and `reach = −σ·idle(out, edge)` (negative: a room sitting
+at the edge would drift back outside it), both in °C/h:
 
 ```
-released[side] ← true   when  push ≤ −natureMargin  and  reach ≥ 0
-released[side] ← false  when  push ≥ +natureMargin  or  reach < 0,
+released[side] ← true   when  drift ≤ −natureRate  and  reach ≥ 0
+released[side] ← false  when  drift ≥ +natureRate  or  reach < 0,
                         or out is unknown (older than 3 h), or a complaint on this side is fresh (within complaintMin)
 a change of released[side] is deferred while the last one is younger than releaseDwellMin
   (unless the side is in a fresh complaint, or out/tin became unknown)
 if released[side]: setpoint[side] = setback[side]
 ```
 
-Between the thresholds nothing changes, so an outdoor reading jittering around
-the room temperature cannot flap a side, and the dwell keeps a sun-struck
-outdoor sensor from cycling the equipment; a room is never left outside the
-band when the air cannot bring it in (the device takes it at once); and a
-complaint on a side keeps it in the device's hands for `complaintMin` — the
-person is uncomfortable now and the air is too slow. Cooling is released only
-when the outdoor air is cooler than the room, so on a hot day cooling is
-always available; the same for heating on a cold one.
+Between the thresholds nothing changes, so a drift jittering around zero
+cannot flap a side, and the dwell keeps a sun-struck outdoor sensor from
+cycling the equipment; a room is never left outside the band when its own
+drift cannot bring it in (the device takes it at once); and a complaint on a
+side keeps it in the device's hands for `complaintMin` — the person is
+uncomfortable now and the drift is too slow. Cooling is released only while
+the learned model says the room cools on its own (attended data, possibly
+another day's): on a hot day cooling is always available, and a room that
+warms from its occupants with cooler air outside keeps its cooling; the same
+for heating on a cold one. While a zone's model is still at its priors
+(`gain` 0, `envelope` = `envelopePrior`) this is the 0.5.0-rc.4 rule with its
+margin at `natureRate / envelopePrior`; once the zone has taught its
+envelope, a leaky room releases at a small outdoor difference and a tight
+one only at a large one, which is what "the air is doing the work" means in
+each. `reach` has no hysteresis and moves with every reading as the model
+learns, not only with the weather: a room settling exactly at its edge can
+change state once per dwell, and the dwell is the only defence (the
+simulator's flapping criterion counts release changes per hour).
 
 ### 7.5 (reserved)
 
@@ -470,29 +527,36 @@ for each side:
   wanted    = clamped to capabilities[side]                                     # reason `limit` if the clamp bit
   setpoint  = the engine's previous output if |wanted − previous| < setpointStep  # a trigger band on the output
               else wanted rounded inward to setpointStep (§2)
-if cool − heat < minGap: keep the side with a fresh complaint if exactly one has it, else the side the room
-                         is pushed toward (`cool` if out > tin, else `heat`); the other side moves outward
-                         (rounded outward) to restore the gap; re-clamp
+if cool − heat < minGap: keep the side with a fresh complaint if exactly one has it, else `heading` (below);
+                         the other side moves outward (rounded outward) to restore the gap; re-clamp
 for each side: setpoint = protection clamp (§7.6), rounded inward; if that breaks the gap the other side gives way
+heading = the side the room is drifting toward: `cool` if idle(out, tin) > 0, else `heat` (`heat` if unknown)
+side    = the side whose setpoint the room is past (σ·(setpoint − tin) < 0 — a released side's setpoint is its
+          setback, a clamped one's the limit), else the side `protecting` names (§7.6 hysteresis), else none
 mode = "auto" if supported;
-       else the side the room is outside of (tin past that setpoint, not released) if supported;
-       else the previous output's mode if it is a side that is not released (hysteresis);
-       else the side opposing the outdoor air (out > tin → "cool", else "heat") if supported;
+       else `side` if it is a side the device supports;
+       else the previous output's mode if it is a side (hysteresis);
+       else `heading` if supported;
        else the first supported mode
-act:   the equipment runs on the side the room is outside of (tin past that setpoint) when that side is in the
-       device's hands — not released, or protection is clamping it — and the mode allows it (the projection, §7.9,
-       uses exactly this)
+act:   `equipment` = `side` when the mode allows it (`auto`, or the mode is that side); else "idle" — also while
+       there is no reading (the projection, §7.9, uses exactly this)
 ```
+
+A released side is not idle at any price: its setpoint is the setback, and
+the equipment runs when the room passes it (the floor's or ceiling's job);
+the same holds for a protection limit, so §7.6's MUST is reachable on a
+device without `auto`.
 
 Output object:
 
 ```
 { heat, cool, mode, state,
+  equipment,                                 # "heat" | "cool" | "idle": the act — what the equipment should be doing now
   band: { heat, cool },                      # the learned band at this outdoor temperature (§7.1)
   released: { heat, cool }, push: { heat, cool },   # the faded push edges or null (§7.2)
   reasons: [string], confidence: { heat, cool },
   deltaFromAmbient: { heat, cool },          # band − out, or null without weather
-  thermal: { envelope, heat, cool },          # §6.5, at this outdoor temperature
+  thermal: { envelope, gain, heat, cool },    # §6.5, at this outdoor temperature
   curve: [ { out, heat, cool, heatSigma, coolSigma, thermal } … ],   # the safe edges, spreads and thermal response at every knot
   protect }
 ```
@@ -502,14 +566,21 @@ order: `seed` (state SEEDED), `learned` (LEARNING or CONVERGED), `frozen`,
 `conflict` (the band is narrower than `minGap`), `push`, `released`,
 `protect`, `limit` (a capability clamp bit), `gap`.
 
+`mode` is the device setting the engine leaves armed; `equipment` says whether
+anything should be running under it. A host whose device has an `off` mode
+MAY apply `off` while `equipment` is `idle` (a device without `auto` is
+otherwise parked on a side); a device in `auto` idles by itself and needs
+nothing. A host that does so takes over the device's own cycle control —
+`equipment` has no hysteresis and no minimum run time — and SHOULD apply its
+own minimum on and off times.
+
 ### 7.9 Projection
 
 `project(state, config, day)` — a pure function of the same state. Given the
 room temperature at the start and a list of `{now, out}` through the day, it
 returns, per interval: the band at that outdoor temperature, the predicted
 room temperature (integrated with the thermal model of §6.5 in 5-minute
-substeps, the equipment running on a side whenever the room is outside its
-setpoint and that side is not released), which sides the air releases, the
+substeps, the equipment running as §7.8's act says), which sides the drift releases, the
 equipment side and its run minutes, and the delta from ambient. It uses the
 same band and act computation as `step` (with no pushes and no fresh
 complaints), so it cannot disagree with it. The host applies its own presence
@@ -523,7 +594,7 @@ There is no block structure: the engine has no notion of time of day.
 
 The snapshot is the complete state as JSON
 ([`schema/snapshot.schema.json`](schema/snapshot.schema.json)) with
-`snapshotVersion: 3`. `restore{snapshot}` MUST accept any version ≤ the
+`snapshotVersion: 4`. `restore{snapshot}` MUST accept any version ≤ the
 implementation's and migrate it; unknown higher versions MUST be rejected.
 Migrating a version-1 or version-2 snapshot keeps `reading`, `weather`,
 `frozen`, `protecting` and `voters` and starts everything else fresh, with
@@ -531,8 +602,14 @@ Migrating a version-1 or version-2 snapshot keeps `reading`, `weather`,
 kept vote records SHOULD replay them (as `weather` + `reading` + `vote`
 events at their original times) so the curve starts from real data.
 
-Migrating also happens when a version-3 snapshot was built with other grid or
-knot parameters (its `seedKey` differs): the curve and thermal model restart.
+Migrating a version-3 snapshot keeps everything, including the equipment
+rates (they mean the same thing: °C/h net of the idle drift, which at `gain`
+0 is the version-3 model); the idle statistics start at zero, which needs the
+zone config. `lastEventAt` stands; `lastOutput` is replaced by the restore
+step's own output (a version-3 one has no `equipment`).
+Migrating also happens when a version-3 or version-4 snapshot was built with
+other grid or knot parameters (its `seedKey` differs): the curve and thermal
+model restart.
 A restored curve that has never learned a vote (every knot's `n` is 0) is as
 good as fresh: `lastEventAt` is cleared so that a replay of older events is
 accepted.
@@ -554,7 +631,7 @@ Record types (all include `at` = `now` and `zone` = config `id`):
 | type | when | fields |
 |---|---|---|
 | `vote` | every accepted vote | `user, dir, src, tin, rh, out, applied, step, push, updated (bool), pushed (bool)` |
-| `decision` | output `heat`, `cool`, `mode`, `state`, `protect` or a `released` flag differs from the previous output | the full output without `curve` |
+| `decision` | output `heat`, `cool`, `mode`, `state`, `protect` or a `released` flag differs from the previous output (not `equipment`: it flips every time the room crosses a setpoint, and hosts see it on every output) | the full output without `curve` |
 | `rejected` | §2, §4, §9 | `reason` (`time`, `type`, `value`, `snapshot`), `event` type |
 
 Feedback codes (hosts render words, never numbers): `nudge.cooler`,

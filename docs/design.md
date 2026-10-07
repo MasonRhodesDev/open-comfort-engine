@@ -192,3 +192,37 @@ equipment loses capacity in the heat; 42 summer days; `npm run sim`; numbers at 
   a full step away).
 - The permutation sweep (390 cases + outdoor swings): no inverted, fighting, both-in-one-hour,
   flapping, leaking or stranded behaviour; 6 % less HVAC than the seed schedule.
+
+## 0.5.0-rc.5: the room's own drift
+
+Live, rc.4 released the office's cooling on a morning when the outdoor air was 1.5 °C cooler
+than the room, and the room — a closed, well-insulated box with a person, their computers and
+the morning sun in it — warmed 2.5 °C in half an hour while the unit sat parked on its heat
+edge. The rule was doing exactly what it said: the air *was* cooler. The model behind it could
+not say anything else: §6.5's idle drift was `envelope · (out − tin)`, a room that always
+drifts toward outdoor. Recovery came 30 minutes later from the weather crossing the edge, not
+from anything the room did (`docs/decisions/0003-release-by-idle-drift.md`).
+
+rc.5 adds the term the room was missing and reads release off the model instead of the air:
+
+- The idle drift is `envelope · (out − tin) + gain`, per outdoor knot; `gain` (°C/h, the
+  heat the room makes or loses by itself) is the intercept of the same line whose slope was
+  already being learned, fitted by least squares on the same readings, each interval weighted
+  by its length. Still no configured physics.
+- Release judges `idle(out, tin)` in °C/h — is the room drifting away from this edge, and
+  would a room at the edge drift back inside — against `natureRate` (0.3 °C/h), replacing the
+  1 °C `natureMargin` on `out − tin`. The equilibrium form (`out + gain/envelope`, keeping the
+  margin in °C) was rejected as ill-conditioned in a tight room.
+- The act (`equipment`: heat / cool / idle) is in the output, so a host can map idle to a
+  device's real `off` instead of re-deriving it.
+- The host's `equip` must come from the equipment's own state: the office had been reporting
+  ESPHome's `action`, which reads 0 while the compressor runs, so every cooling run had been
+  learned as air (the office's equipment rates never left their prior).
+- The act and mode rules were rewritten in the adversarial review of the spec diff: a released
+  side's setpoint is its setback and the equipment runs when the room passes it, so a device
+  without `auto` holds its floor, ceiling and protection limit without host help (rc.4 could
+  not name a released side at all); and "which way the room is heading" is the drift's sign in
+  every place that asks. Three learning gates came from the same review (an inadmissible rate,
+  a missing `equip`, `FROZEN`: each teaches nothing).
+- The thermal-response numbers above ("learned within a week", 0.15/h, 3.0 °C/h) are rc.2's
+  and are stale under per-hour forgetting until re-measured.

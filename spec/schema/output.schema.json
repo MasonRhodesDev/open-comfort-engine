@@ -8,6 +8,7 @@
     "cool",
     "mode",
     "state",
+    "equipment",
     "band",
     "released",
     "push",
@@ -39,6 +40,13 @@
         "LEARNING",
         "CONVERGED",
         "FROZEN"
+      ]
+    },
+    "equipment": {
+      "enum": [
+        "heat",
+        "cool",
+        "idle"
       ]
     },
     "band": {
@@ -169,11 +177,15 @@
       "type": "object",
       "required": [
         "envelope",
+        "gain",
         "heat",
         "cool"
       ],
       "properties": {
         "envelope": {
+          "type": "number"
+        },
+        "gain": {
           "type": "number"
         },
         "heat": {
@@ -216,11 +228,15 @@
             "type": "object",
             "required": [
               "envelope",
+              "gain",
               "heat",
               "cool"
             ],
             "properties": {
               "envelope": {
+                "type": "number"
+              },
+              "gain": {
                 "type": "number"
               },
               "heat": {

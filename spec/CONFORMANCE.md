@@ -16,7 +16,7 @@ Each file in `vectors/` is JSON Lines (UTF-8, one JSON value per line):
 ## Running a vector
 
 ```
-state = snapshot ? restore(snapshot) : init(config)
+state = snapshot ? restore(snapshot, config) : init(config)
 for each step line:
     (state, output, effects) = step(state, line.event, config)
     compare(output,  line.expect.output)
@@ -32,8 +32,8 @@ checked, so vectors pin what matters for that scenario.
 | value | tolerance |
 |---|---|
 | `heat`, `cool` (already rounded to `setpointStep`) | exact |
-| `mode`, `state`, `reasons`, `released`, `protect`, feedback codes, record `type`/`dir`/`user`/`pushed` | exact |
-| any other number (band, push, confidence, delta, thermal rates, curve points, record numbers) | absolute 1e−6 |
+| `mode`, `equipment`, `state`, `reasons`, `released`, `protect`, feedback codes, record `type`/`dir`/`user`/`pushed` | exact |
+| any other number (band, push, confidence, delta, thermal rates — envelope, gain, equipment — curve points, record numbers) | absolute 1e−6 |
 | snapshot | not compared directly; round-trip is tested by `restore` steps (below) |
 
 ## Special step

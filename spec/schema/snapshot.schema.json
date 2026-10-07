@@ -25,7 +25,7 @@
   ],
   "properties": {
     "snapshotVersion": {
-      "const": 3
+      "const": 4
     },
     "zone": {
       "type": "string"
@@ -375,15 +375,41 @@
     "thermal": {
       "type": "object",
       "required": [
-        "envelope",
+        "idle",
         "heat",
         "cool"
       ],
       "properties": {
-        "envelope": {
+        "idle": {
+          "description": "Per knot, the idle-drift least-squares statistics (spec §6.5): n (hours of evidence), sx, sy, sxx, sxy.",
           "type": "array",
           "items": {
-            "type": "number"
+            "type": "object",
+            "required": [
+              "n",
+              "sx",
+              "sy",
+              "sxx",
+              "sxy"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "n": {
+                "type": "number"
+              },
+              "sx": {
+                "type": "number"
+              },
+              "sy": {
+                "type": "number"
+              },
+              "sxx": {
+                "type": "number"
+              },
+              "sxy": {
+                "type": "number"
+              }
+            }
           }
         },
         "heat": {
