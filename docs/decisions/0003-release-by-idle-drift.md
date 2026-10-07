@@ -90,20 +90,28 @@ readings, and reported in `output.thermal` and `output.curve[].thermal`.
 **Estimator.** Per knot, `envelope` and `gain` are the slope and intercept of the room's idle
 rate on `x = out − tin`, fitted by exponentially-forgotten least squares. Each idle interval
 (`rate = Δtin/dtH`, `x` at its start) updates the two neighbouring knots' sufficient
-statistics with interpolation weight `w` and forgetting `f = thermalForget·w`:
+statistics with weight `w = wt·dtH` — its interpolation weight times its length in hours: an
+interval is as much evidence as it is long, so a 0.5 °C-quantised reading two minutes after
+the last one (±15 °C/h of noise) cannot outvote a quiet half hour — and forgetting
+`f = thermalForget·w`, i.e. per hour of evidence (today it is per interval, which at 2-minute
+readings is a memory of twenty minutes):
 
 ```
-n ← (1−f)·n + w ;  Sx ← (1−f)·Sx + w·x ;  Sy ← (1−f)·Sy + w·rate ;  Sxx ← (1−f)·Sxx + w·x² ;  Sxy ← (1−f)·Sxy + w·x·rate
-envelope = clamp((n·Sxy − Sx·Sy) / (n·Sxx − Sx²), 0.02, 5)        # the floor as today
-gain     = clamp((Sy − envelope·Sx) / n, −10, 10)
+n ← (1−f)·n + w ;  sx ← (1−f)·sx + w·x ;  sy ← (1−f)·sy + w·rate ;  sxx ← (1−f)·sxx + w·x² ;  sxy ← (1−f)·sxy + w·x·rate
+N = n + h ;  SXX = sxx + 9h ;  SXY = sxy + 9h·envelopePrior                  # h = thermalPriorHours: the prior, added at every read
+envelope = clamp((N·SXY − sx·sy) / (N·SXX − sx²), 0.02, 5)        # the floor as today
+gain     = clamp((sy − envelope·sx) / N, −10, 10)
 ```
 
-Priors are pseudo-observations: `thermalPriorHours` (default 2) of data on the line
-`rate = envelopePrior·x` (gain 0), at `x = ±3`. They matter until the first days of readings,
-as today's priors do. The `|out − tin| ≥ 1` guard goes: a small `x` cannot tell the slope, and
-the regression knows that — it informs the intercept instead, which is exactly the number
-release needs at that operating point. Running intervals update `equipment[side]` as today,
-net of the full idle model (`σ·(idle(out, tin) − rate)`, same clamps).
+The prior is `thermalPriorHours` (default 2) of pseudo-observations on the line
+`rate = envelopePrior·x` (gain 0), half at `x = +3` and half at `x = −3`, added to the
+statistics at every read rather than stored in them: it is never forgotten, so the denominator
+is never zero and a room whose `out − tin` barely varies (the office, attended) keeps the
+prior slope while the intercept absorbs the observed drift. With no data it reads back exactly
+today's priors. The `|out − tin| ≥ 1` guard goes: a small `x` cannot tell the slope, and the
+regression knows that — it informs the intercept instead, which is exactly the number release
+needs at that operating point. Running intervals update `equipment[side]` as today, net of the
+full idle model (`σ·(idle(out, tin) − rate)`, same clamps).
 
 What this is not: a configured internal-gain figure (physics is learned, like everything else
 in §6.5), a time-of-day term (the engine has no clock; the knots over outdoor temperature carry
@@ -154,7 +162,9 @@ releases cooling a little less on mild days — the correct direction, and a cos
 ## 4. §7.8 / §10 — the act is published
 
 `equipment: "heat" | "cool" | "idle"` joins the output object (it is already computed, and the
-projection already reports it per interval); a change in it is a `decision` record trigger.
+projection already reports it per interval). It is **not** a `decision` record trigger: it
+flips every time the room crosses a setpoint (a device in `auto` would write a record and a
+snapshot every few minutes), and hosts receive it on every output.
 Hosts whose device has an `off` mode MAY apply `off` while `equipment` is `idle`; `mode`
 remains the device setting the engine would leave armed. The house in `auto` idles by itself
 and needs nothing. Vectors pin `equipment`.
@@ -185,7 +195,10 @@ mode*. A duty field (`equipMin`) for short-cycling units is deferred (§8, item 
 2. Simulator: an office-like zone (`envelope` 0.05, attended `gain` 1–3 °C/h, sensor quantised to
    0.5 °C, 3-min episodes) — no release while the room's own drift points outward, no stranding,
    no flapping; the house sim's release-on/off comparison (design.md) re-run with `gain` 0.3 to
-   put a number on the house cost.
+   put a number on the house cost. Also re-run design.md's "thermal response learned within a
+   week": forgetting is now per hour of evidence, so an equipment rate's memory is
+   `1/thermalForget` hours *of running*, which for a unit that runs twenty minutes a day is
+   weeks — the claim must be re-measured, not assumed.
 3. Projection: `project()` before vs `step()` during, unchanged requirement.
 4. Record 517's inputs replayed against the new engine: no release.
 5. Adversarial review of spec + code, as for 0.4.0 and rc.2.
@@ -195,7 +208,8 @@ mode*. A duty field (`equipMin`) for short-cycling units is deferred (§8, item 
 ## 7. What changes where (only after approval)
 
 - **Spec** 0.5.0-rc.5: §3.4 (`natureRate` replaces `natureMargin`; `thermalPriorHours`), §4 (`equip` sentence),
-  §6.5 (source term, estimator), §7.4 (release reads the model), §7.8/§10 (`equipment`),
+  §6.5 (source term, estimator), §7.4 (release reads the model), §7.8 (`equipment`; §10 says
+  it is not a decision trigger),
   §9 snapshot v4 (per-knot statistics; migration restarts the thermal model and keeps the curve).
   Vectors: `thermal`, `nature-release`, `stall-reactuates` re-pinned; a new `idle-gain` vector.
 - **Reference**: `thermal.ts` (statistics, fit, `idle()`), `engine.ts` `act()` (two lines),
