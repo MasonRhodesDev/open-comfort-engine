@@ -218,20 +218,23 @@ function act(gr: Grid, cfg: ZoneConfig, state: Pick<State, "curve" | "thermal">,
     }
   }
 
-  // mode: auto if the device has it. Else: a side the room is outside of that the air has (released, not
-  // protecting) means idle — `off` if the device has it, else that side at its setback — never the other
-  // side's edge; else the side the room is outside of; else keep the side it was running (hysteresis);
-  // else the side opposing the outdoor air
+  // mode: auto if the device has it. Else the side the room is outside of when that side is in the device's
+  // hands (not released, or protection is clamping it); else nothing needs to run: `off` if the device has
+  // it (idle is the default — inside the band the device is off and the engine switches a side on when the
+  // room crosses an edge); a device without `off` idles on a released side at its setback, else keeps the
+  // side it was running (hysteresis), else takes the side opposing the outdoor air
   let mode: Mode;
   if (cap.modes.includes("auto")) mode = "auto";
   else {
     const tin = inp.tin;
+    const needs = tin === null ? null : SIDES.find((side) => (!released[side.key] || protecting === side.limit) && inwardOf(side, sp[side.key], tin) < 0) ?? null;
     const outsideEdge = tin === null ? null : SIDES.find((side) => inwardOf(side, edge[side.key], tin) < 0) ?? null;
-    const outside = tin === null ? null : SIDES.find((side) => !released[side.key] && inwardOf(side, sp[side.key], tin) < 0) ?? null;
     const prev = SIDES.find((side) => side.key === inp.lastMode && !released[side.key]);
     let want: Mode;
-    if (outsideEdge && released[outsideEdge.key] && protecting !== outsideEdge.limit) want = cap.modes.includes("off") ? "off" : outsideEdge.key;
-    else want = outside ? outside.key : prev ? prev.key : pushedSide().key;
+    if (needs) want = needs.key;
+    else if (cap.modes.includes("off")) want = "off";
+    else if (outsideEdge && released[outsideEdge.key]) want = outsideEdge.key;
+    else want = prev ? prev.key : pushedSide().key;
     mode = cap.modes.includes(want) ? want : cap.modes[0];
   }
 

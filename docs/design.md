@@ -220,3 +220,15 @@ Known limit, now stated in SPEC §7.4: the thermal model has no internal-load te
 envelope floors at 0.02 /h, so it cannot predict a room warming while outdoors is cooler.
 In such a room rc.5 gives a dwell-bounded cycle (released inside → drifts out → taken
 back within 30 min → conditioned), not a hold. A load term is the model's next input.
+
+## 0.5.0-rc.6 — inside the band, an off-capable device is off
+
+Owner decision after the office reset (2026-10-11): a fresh office engine put the unit in
+`heat` at 66 °F while the room sat inside the band — functionally idle, but not what idle
+should look like. The non-auto mode rule now reads: the side the room is outside of when
+that side is in the device's hands (not released, or protection clamping it); else `off`
+when the device has it; a device without `off` idles on a released side at its setback,
+else holds the side it was running. The engine switches a side on when the room crosses an
+edge (one reading's lag) instead of leaving the unit's own thermostat armed at the edge.
+Tests: inside → off, crossing the cool edge → cool, back inside → off; a heat/cool-only
+device keeps its side. One vector changed (`protect`: heat → off inside the band).

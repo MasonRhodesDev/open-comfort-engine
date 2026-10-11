@@ -1,6 +1,6 @@
 # Open Comfort Engine — Specification
 
-Version: **0.5.0-rc.5** (release candidate)
+Version: **0.5.0-rc.6** (release candidate)
 Status: normative. The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are
 to be interpreted as described in RFC 2119.
 
@@ -489,11 +489,13 @@ if cool − heat < minGap: keep the side with a fresh complaint if exactly one h
                          (rounded outward) to restore the gap; re-clamp
 for each side: setpoint = protection clamp (§7.6), rounded inward; if that breaks the gap the other side gives way
 mode = "auto" if supported;
-       else, when the side the room is outside of (tin past that edge) is released and not protecting:
-            "off" if supported, else that side (idle at its setback) — never the other side's edge;
-       else the side the room is outside of (tin past that setpoint, not released) if supported;
-       else the previous output's mode if it is a side that is not released (hysteresis);
-       else the side opposing the outdoor air (out > tin → "cool", else "heat") if supported;
+       else the side the room is outside of (tin past that setpoint) when that side is in the device's hands
+            (not released, or protection is clamping it), if supported;
+       else "off" if supported — nothing needs to run: inside the band the device is off, and a side is switched
+            on when the room crosses an edge (idle is the default);
+       else (a device without "off") a released side the room is outside of, idle at its setback — never the
+            other side's edge; else the previous output's mode if it is a side that is not released (hysteresis);
+            else the side opposing the outdoor air (out > tin → "cool", else "heat") if supported;
        else the first supported mode
 act:   the equipment runs on the side the room is outside of (tin past that setpoint) when that side is in the
        device's hands — not released, or protection is clamping it — and the mode allows it (the projection, §7.9,

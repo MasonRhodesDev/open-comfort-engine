@@ -204,11 +204,23 @@ describe("nature (§7.4)", () => {
     expect(fast.state.thermal.envelope[k20]).toBeGreaterThan(0.4);
     expect(fast.output.released.cool).toBe(true);
   });
-  it("a released side on a heat/cool/off device means off, never the other side's edge", () => {
+  it("inside the band, or outside a released side, a heat/cool/off device is off; a heat/cool-only device holds a side", () => {
     // the office: room a step past the cool edge, the air 8 °C cooler and (prior) fast enough: cool is released
     const o = lastOf(drive(base(25.0, 17), office).outs);
     expect(o.released.cool).toBe(true);
     expect(o.mode).toBe("off");
+    // inside the band: off; the room crossing the cool edge switches cooling on, back inside switches it off
+    const inside = drive(base(22.0, 26), office); // warmer outside: the cool side stays in the device's hands
+    expect(lastOf(inside.outs).mode).toBe("off");
+    const crossed = step(inside.last.state, { type: "reading", now: at(1, "09:30"), tin: 24.8, equip: "idle" }, office);
+    expect(crossed.output.mode).toBe("cool");
+    const back = step(crossed.state, { type: "reading", now: at(1, "09:45"), tin: 24.0, equip: "cool" }, office);
+    expect(back.output.mode).toBe("off");
+    // a device without off keeps the side it was running while inside the band (its own thermostat holds the edge)
+    const noOff = { ...office, capabilities: { ...office.capabilities, modes: ["heat", "cool"] as ("heat" | "cool")[] } };
+    const held = drive([...base(24.8, 26, 1), { type: "reading", now: at(1, "09:30"), tin: 24.0, equip: "cool" }], noOff);
+    expect(held.outs[held.outs.length - 2].mode).toBe("cool");
+    expect(lastOf(held.outs).mode).toBe("cool");
     // stranded instead (room far outside): conditioned, mode cool
     const far = lastOf(drive(base(28, 20), office).outs);
     expect(far.released.cool).toBe(false);
