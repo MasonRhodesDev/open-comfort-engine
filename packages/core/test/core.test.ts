@@ -184,7 +184,38 @@ describe("nature (§7.4)", () => {
   });
   it("the mirror: cooling is never released on a hot day; it is on a cool evening", () => {
     expect(lastOf(drive(base(26, 35)).outs).released.cool).toBe(false);
-    expect(lastOf(drive(base(26, 18)).outs).released).toEqual({ heat: false, cool: true });
+    expect(lastOf(drive(base(24.6, 18)).outs).released).toEqual({ heat: false, cool: true });
+  });
+  it("the air must be able to do the job: a room outside the band is conditioned when the learned response is too slow, released when it is fast", () => {
+    // the house's envelope prior (0.3/h) with the air 8 °C cooler: 1.2 °C in a dwell; a room 1.6 past the cool edge is stranded
+    const slow = lastOf(drive(base(26, 18)).outs);
+    expect(slow.released.cool).toBe(false);
+    expect(slow.cool).toBe(24.4);
+    // the same room, a step past the edge: the air closes that within the dwell
+    const near = lastOf(drive(base(24.6, 18)).outs);
+    expect(near.released.cool).toBe(true);
+    // teach a fast envelope at this outdoor temperature (idle intervals, the room falling 1 °C per 10 min toward
+    // the air), then the room is back at 26 after the heater ran (the jump is the equipment's, not the air's):
+    // the same 26/18 case is now released, the air is expected to close 1.6 °C within a dwell
+    const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+    const taught = drive([...base(26, 18), ...[25, 24, 23, 22, 21, 20].map((tin, i) => ({ type: "reading" as const, now: at(1, hhmm(9 * 60 + 16 + 10 * i)), tin, equip: "idle" as const }))]);
+    const fast = step(taught.last.state, { type: "reading", now: at(1, hhmm(9 * 60 + 76)), tin: 26, equip: "heat" }, house);
+    const k20 = knots(params(house)).indexOf(20);
+    expect(fast.state.thermal.envelope[k20]).toBeGreaterThan(0.4);
+    expect(fast.output.released.cool).toBe(true);
+  });
+  it("a released side on a heat/cool/off device means off, never the other side's edge", () => {
+    // the office: room a step past the cool edge, the air 8 °C cooler and (prior) fast enough: cool is released
+    const o = lastOf(drive(base(25.0, 17), office).outs);
+    expect(o.released.cool).toBe(true);
+    expect(o.mode).toBe("off");
+    // stranded instead (room far outside): conditioned, mode cool
+    const far = lastOf(drive(base(28, 20), office).outs);
+    expect(far.released.cool).toBe(false);
+    expect(far.mode).toBe("cool");
+    // protection beats it: a room at the max limit with the cool side released is still cooled
+    const prot = lastOf(drive(base(29.4, 27), office).outs);
+    expect(prot.mode).toBe("cool");
   });
   it("hysteresis: jitter inside the margin cannot flap a side", () => {
     let r = drive(base(22, 23.5)).last;
@@ -201,13 +232,13 @@ describe("nature (§7.4)", () => {
     const r = drive(base(14, 15), cfg).last; // 4 °C below the edge, the air can only take it to 15
     expect(r.output.released.heat).toBe(false);
     expect(r.output.heat).toBe(18);
-    // with the air just inside the edge, released; once the air falls short of the edge, taken back
-    let r2 = drive(base(16.5, 18.2), cfg).last;
+    // a room within a step of the edge with the air just inside it: released; once the air falls short of the edge, taken back
+    let r2 = drive(base(17.95, 19.0), cfg).last;
     expect(r2.output.released.heat).toBe(true);
     r2 = step(r2.state, { type: "weather", now: at(1, "10:00"), out: 17.9 }, cfg);
     expect(r2.output.released.heat).toBe(false);
     // with the air inside the band, the room resting at the air's temperature is fine: stays released
-    let r3 = drive(base(17.4, 19), cfg).last;
+    let r3 = drive(base(17.95, 19), cfg).last;
     r3 = step(r3.state, { type: "reading", now: at(1, "10:00"), tin: 18.95, equip: "idle" }, cfg);
     expect(r3.output.released.heat).toBe(true);
   });

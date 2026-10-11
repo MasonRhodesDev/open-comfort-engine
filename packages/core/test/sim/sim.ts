@@ -23,8 +23,9 @@ export interface SimOptions {
   seed?: number;
   /** outdoor temperature at a given day/hour */
   outdoor: (day: number, hour: number) => number;
-  /** true room physics: envelope coupling (1/h) and equipment rate (°C/h), the latter possibly a function of outdoor temperature */
-  thermal: { envelope: number; equipment: number | ((out: number) => number) };
+  /** true room physics: envelope coupling (1/h), equipment rate (°C/h, possibly a function of outdoor temperature),
+   * and an internal heat load (°C/h the room warms on its own: people, machines, sun) */
+  thermal: { envelope: number; equipment: number | ((out: number) => number); load?: number };
   freezeAfterDay?: number;
   /** the host feeds the engine only while someone is home (default true) */
   hostPresence?: boolean;
@@ -42,6 +43,7 @@ export interface DayStats {
   curveRms: PerSideNum | null; // RMS error of the learned edges vs the population's true ones, at the day's outdoor temps
   nightDrift: number | null; // |Δ heat edge at a fixed outdoor temperature (the night knot)| over the night (23:00–07:00), when nobody can vote
   confidence: number; // mean cool-side confidence while attended
+  strandedRunMin: number; // longest attended stretch with the room more than a step outside the band on a side the engine had released
 }
 
 /** mulberry32: a small seeded PRNG for the simulator only (the engine has none). */
@@ -79,7 +81,8 @@ export function simulate(o: SimOptions): { stats: DayStats[]; state: State; last
     return [lo, hi];
   };
   for (let d = 0; d < o.days; d++) {
-    const ds: DayStats = { day: d, votes: 0, uncomfortableMin: 0, asleepUncomfortableMin: 0, hvacMin: 0, attendedMin: 0, degreeHours: 0, bandWidth: 0, curveRms: null, nightDrift: null, confidence: 0 };
+    const ds: DayStats = { day: d, votes: 0, uncomfortableMin: 0, asleepUncomfortableMin: 0, hvacMin: 0, attendedMin: 0, degreeHours: 0, bandWidth: 0, curveRms: null, nightDrift: null, confidence: 0, strandedRunMin: 0 };
+    let strandedRun = 0;
     let bandSum = 0, bandN = 0, rmsH = 0, rmsC = 0, rmsN = 0, confSum = 0;
     if (o.freezeAfterDay !== undefined && d === o.freezeAfterDay) feed({ type: "freeze", now: fmt(d, 0), on: true });
     for (let minute = 0; minute < 1440; minute += 5) {
@@ -94,7 +97,7 @@ export function simulate(o: SimOptions): { stats: DayStats[]; state: State; last
       let equip: "heat" | "cool" | "idle" = "idle";
       const dt = 5 / 60;
       const eq = typeof o.thermal.equipment === "function" ? o.thermal.equipment(outT) : o.thermal.equipment;
-      let rate = o.thermal.envelope * (outT - tin);
+      let rate = o.thermal.envelope * (outT - tin) + (o.thermal.load ?? 0);
       if (tin > cool) { rate -= eq; equip = "cool"; }
       else if (tin < heat) { rate += eq; equip = "heat"; }
       tin += rate * dt;
@@ -104,6 +107,10 @@ export function simulate(o: SimOptions): { stats: DayStats[]; state: State; last
         if (minute % 10 === 0) feed({ type: "weather", now: fmt(d, minute), out: Math.round(outT * 10) / 10 });
         feed({ type: "reading", now: fmt(d, minute), tin: Math.round(tin * 100) / 100, equip });
         if (out) { bandSum += out.band.cool - out.band.heat; bandN++; confSum += out.confidence.cool; const [lo, hi] = trueBand(outT, hour); rmsC += (out.band.cool - hi) ** 2; rmsH += (out.band.heat - lo) ** 2; rmsN++; }
+        const stepC = o.config.capabilities.setpointStep;
+        const stranded = !!out && ((out.released.cool && tin > out.band.cool + stepC) || (out.released.heat && tin < out.band.heat - stepC));
+        strandedRun = stranded ? strandedRun + 5 : 0;
+        ds.strandedRunMin = Math.max(ds.strandedRunMin, strandedRun);
       }
       const nightKnot = () => out!.curve.find((k) => k.out === 15)!.heat; // the curve itself, at a fixed outdoor knot: not confounded by the weather moving
       if (out && hour === 23 && minute % 60 === 0) night0 = nightKnot();

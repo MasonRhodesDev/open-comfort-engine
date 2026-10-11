@@ -9,7 +9,8 @@
 //   leak       a released side with its equipment running
 //   stranded   the room outside the band for hours with the equipment idle and nature not helping
 // Deterministic, no votes (the people are quiet): this is about the control loop, not learning.
-import { init, step, type EngineEvent, type Output, type ZoneConfig } from "../../src";
+import { init, step, type EngineEvent, type Output, type ZoneConfig, params } from "../../src";
+import { expectedChange } from "../../src/thermal";
 import { house } from "../fixtures";
 
 export interface SweepCase {
@@ -67,6 +68,7 @@ export function runCase(c: SweepCase, hours = 6): SweepResult {
     hourly[hour] = hourly[hour] || { heat: false, cool: false, heatMin: 0, coolMin: 0, changes: 0, key: null, dirHeat: 0, dirCool: 0 };
     // room physics: leak toward outdoor (time constant ~2 h), equipment moves it 0.25 °C per 5 min
     const outNow = outAt(m);
+    const tinSeen = tin; // the room the engine's last reading reported: its decision is judged against that, not against this step's physics
     const leak = (x: number) => x + (outNow - x) * 0.04;
     tin = leak(tin);
     staticTin = leak(staticTin);
@@ -79,7 +81,14 @@ export function runCase(c: SweepCase, hours = 6): SweepResult {
     if (staticTin > c.seed.cool) { staticTin -= 0.25; r.staticHvacMin += 5; }
     else if (staticTin < c.seed.heat) { staticTin += 0.25; r.staticHvacMin += 5; }
     const at = fmt(now);
-    const could = { heat: outNow >= tin + 2 && outNow >= o.band.heat, cool: outNow <= tin - 2 && outNow <= o.band.cool };
+    // the air could do a side's job: it pushes the room away from that edge, reaches it, and — by the engine's own
+    // learned thermal response — closes whatever gap the room has to the edge within one dwell (§7.4)
+    const P = params(cfg);
+    const airDwell = expectedChange(s.thermal, P, outNow, DWELL / 60, outNow - tinSeen, null);
+    const could = {
+      heat: outNow >= tinSeen + 2 && outNow >= o.band.heat && (tinSeen >= o.band.heat - 0.1 || airDwell >= o.band.heat - tinSeen),
+      cool: outNow <= tinSeen - 2 && outNow <= o.band.cool && (tinSeen <= o.band.cool + 0.1 || -airDwell >= tinSeen - o.band.cool),
+    };
     for (const sd of ["heat", "cool"] as const) { if (!could[sd]) couldSince[sd] = m; }
     const dwelling = (sd: "heat" | "cool") => m - couldSince[sd] < DWELL; // fighting counts once it has persisted past the dwell
     // --- checks on this step's action against the output that caused it

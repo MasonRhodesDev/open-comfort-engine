@@ -192,3 +192,31 @@ equipment loses capacity in the heat; 42 summer days; `npm run sim`; numbers at 
   a full step away).
 - The permutation sweep (390 cases + outdoor swings): no inverted, fighting, both-in-one-hour,
   flapping, leaking or stranded behaviour; 6 % less HVAC than the seed schedule.
+
+## 0.5.0-rc.5 — release asks the thermal model (issue #2)
+
+Live finding, 2026-10-10/11 (office): the cool side was released whenever the outdoor air
+was cooler than the room, by the out−tin vector alone, and a room 5 °C above its band sat
+there for hours with the unit idle; the non-auto mode rule then parked the unit in `heat`
+at the heat edge ("set to 66 °F and stops"). rc.5 changes two things in `act()`, both
+derived from what the zone already taught the engine:
+
+- **Release needs expected progress.** A side is released only while the learned thermal
+  response says the air alone will close the room's gap to that edge within one
+  `releaseDwellMin` (`progress ≥ outsideBy`), with a dead zone of one `setpointStep` so
+  sensor noise at the edge is not "outside". Inside the band nothing changes: the air only
+  has to keep pushing away from the edge.
+- **A released side on a heat/cool/off device is `off`** (or that side at its setback when
+  the device has no `off`), never the other side's edge; `equipment` and `mode` now agree.
+
+Numbers: sweep 390 cases, 0 findings, HVAC 3 % below the seed schedule (rc.4: 6 % — the
+engine now conditions a room the air would have taken hours to bring in). Household and
+office simulations unchanged within noise. New simulation: an office with a 1.5 °C/h
+internal load (machines, sun) — longest stretch released while more than a step outside
+the band: 0 min (rc.4 left such a room stranded indefinitely); week 2: HVAC 72 % of
+attended minutes, 225 person-minutes of discomfort.
+
+Known limit, now stated in SPEC §7.4: the thermal model has no internal-load term and its
+envelope floors at 0.02 /h, so it cannot predict a room warming while outdoors is cooler.
+In such a room rc.5 gives a dwell-bounded cycle (released inside → drifts out → taken
+back within 30 min → conditioned), not a hold. A load term is the model's next input.

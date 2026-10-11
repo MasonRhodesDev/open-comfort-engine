@@ -1,6 +1,6 @@
 # Open Comfort Engine — Specification
 
-Version: **0.5.0-rc.4** (release candidate)
+Version: **0.5.0-rc.5** (release candidate)
 Status: normative. The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are
 to be interpreted as described in RFC 2119.
 
@@ -405,14 +405,19 @@ push to `target = applied[side]`. A manual change is **not** a complaint: no
 The outdoor air pushes the room along the vector `out − tin`. A side the room
 is being pushed **away from**, by air that can bring the room inside that
 edge on its own, has nothing to do: it is released to `setback` and the air
-does the work. It is taken back when the air pushes the other way or can no
-longer reach the edge. With `push = σ·(out − tin)` (negative: the air pushes
-the room away from this edge) and `reach = σ·(edge − out)` (negative: the
-outdoor temperature is outside this edge):
+does the work. It is taken back when the air pushes the other way, can no
+longer reach the edge, or — by the zone's own learned thermal response (§6.5)
+— is too slow for how far outside the room is. With `push = σ·(out − tin)`
+(negative: the air pushes the room away from this edge), `reach = σ·(edge − out)`
+(negative: the outdoor temperature is outside this edge), `outsideBy =
+max(0, −σ·(edge − tin))` (how far the room is past this edge; 0 inside) and
+`progress = σ·(0 − expected(idle, releaseDwellMin))` (what the air alone is
+expected to do to the room over one dwell, inward of this edge, §6.5):
 
 ```
-released[side] ← true   when  push ≤ −natureMargin  and  reach ≥ 0
-released[side] ← false  when  push ≥ +natureMargin  or  reach < 0,
+stranded[side] = outsideBy ≥ setpointStep  and  progress < outsideBy
+released[side] ← true   when  push ≤ −natureMargin  and  reach ≥ 0  and  not stranded
+released[side] ← false  when  push ≥ +natureMargin  or  reach < 0  or  stranded,
                         or out is unknown (older than 3 h), or a complaint on this side is fresh (within complaintMin)
 a change of released[side] is deferred while the last one is younger than releaseDwellMin
   (unless the side is in a fresh complaint, or out/tin became unknown)
@@ -421,12 +426,21 @@ if released[side]: setpoint[side] = setback[side]
 
 Between the thresholds nothing changes, so an outdoor reading jittering around
 the room temperature cannot flap a side, and the dwell keeps a sun-struck
-outdoor sensor from cycling the equipment; a room is never left outside the
-band when the air cannot bring it in (the device takes it at once); and a
-complaint on a side keeps it in the device's hands for `complaintMin` — the
-person is uncomfortable now and the air is too slow. Cooling is released only
-when the outdoor air is cooler than the room, so on a hot day cooling is
-always available; the same for heating on a cold one.
+outdoor sensor from cycling the equipment. Inside the band the air only has to
+keep pushing away from the edge; outside it, it must be expected to close the
+gap within one dwell, or the device takes the room back — a slow zone is never
+left outside its band waiting for air that will not arrive, and a step of dead
+zone keeps sensor noise at the edge from counting as "outside". A complaint on
+a side keeps it in the device's hands for `complaintMin` — the person is
+uncomfortable now and the air is too slow. Cooling is released only when the
+outdoor air is cooler than the room, so on a hot day cooling is always
+available; the same for heating on a cold one.
+
+Known limit: the thermal model (§6.5) has no internal-load term, so it cannot
+predict a room *warming* while the outdoor air is cooler. In such a room the
+air is released while the room is inside the band, the room drifts out, and
+the release is taken back after at most one dwell: a dwell-bounded cycle, not
+a strand. A load term is the model's next input, not a rule.
 
 ### 7.5 (reserved)
 
@@ -475,6 +489,8 @@ if cool − heat < minGap: keep the side with a fresh complaint if exactly one h
                          (rounded outward) to restore the gap; re-clamp
 for each side: setpoint = protection clamp (§7.6), rounded inward; if that breaks the gap the other side gives way
 mode = "auto" if supported;
+       else, when the side the room is outside of (tin past that edge) is released and not protecting:
+            "off" if supported, else that side (idle at its setback) — never the other side's edge;
        else the side the room is outside of (tin past that setpoint, not released) if supported;
        else the previous output's mode if it is a side that is not released (hysteresis);
        else the side opposing the outdoor air (out > tin → "cool", else "heat") if supported;

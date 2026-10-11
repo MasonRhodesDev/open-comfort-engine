@@ -128,7 +128,7 @@ interface Act {
 }
 
 /** §7.1–7.8 for one moment: the learned band at this outdoor temperature, then the setpoints. */
-function act(gr: Grid, cfg: ZoneConfig, state: Pick<State, "curve">, inp: ActInput): Act {
+function act(gr: Grid, cfg: ZoneConfig, state: Pick<State, "curve" | "thermal">, inp: ActInput): Act {
   const p = gr.p;
   const cap = cfg.capabilities;
   const reasons: string[] = [];
@@ -146,10 +146,11 @@ function act(gr: Grid, cfg: ZoneConfig, state: Pick<State, "curve">, inp: ActInp
   const edge = perSide((side) => (push[side.key] === null ? band[side.key] : (push[side.key] as number)));
 
   // §7.4 nature: a side is released to setback while the outdoor air pushes the room away from it AND can
-  // bring the room inside that edge on its own. It is taken back when the air pushes the other way
-  // (beyond natureMargin, so jitter cannot flap it) or can no longer reach the edge (nobody is left
-  // stranded); never while a complaint is fresh (§7.3). A side keeps its state for releaseDwellMin after
-  // a change (a sun-struck outdoor sensor cannot cycle the equipment).
+  // bring the room inside that edge on its own — by the zone's learned thermal response, within one dwell.
+  // It is taken back when the air pushes the other way (beyond natureMargin, so jitter cannot flap it), can
+  // no longer reach the edge, or is too slow for how far outside the room is (nobody is left stranded);
+  // never while a complaint is fresh (§7.3). A side keeps its state for releaseDwellMin after a change (a
+  // sun-struck outdoor sensor cannot cycle the equipment).
   const released = { ...inp.released };
   const releasedAt = { ...inp.releasedAt };
   for (const side of SIDES) {
@@ -157,9 +158,14 @@ function act(gr: Grid, cfg: ZoneConfig, state: Pick<State, "curve">, inp: ActInp
     const known = inp.out !== null && inp.tin !== null;
     if (!known || inp.fresh[side.key]) want = false;
     else {
-      const pushAir = side.sign * ((inp.out as number) - (inp.tin as number)); // < 0: the air pushes the room away from this edge
-      const reach = inwardOf(side, edge[side.key], inp.out as number); // < 0: the outdoor temperature is outside this edge
-      if (pushAir >= p.natureMargin || reach < 0) want = false;
+      const out = inp.out as number, tin = inp.tin as number;
+      const pushAir = side.sign * (out - tin); // < 0: the air pushes the room away from this edge
+      const reach = inwardOf(side, edge[side.key], out); // < 0: the outdoor temperature is outside this edge
+      // what the air alone is expected to do over one dwell (inward of this edge), against how far outside the room is
+      const progress = inwardOf(side, 0, expectedChange(state.thermal, p, out, p.releaseDwellMin / 60, out - tin, null));
+      const outsideBy = Math.max(0, -inwardOf(side, edge[side.key], tin));
+      const stranded = outsideBy >= cap.setpointStep && progress < outsideBy; // a step's dead zone: noise at the edge is not "outside"
+      if (pushAir >= p.natureMargin || reach < 0 || stranded) want = false;
       else if (pushAir <= -p.natureMargin) want = true;
     }
     if (want !== released[side.key]) {
@@ -212,14 +218,20 @@ function act(gr: Grid, cfg: ZoneConfig, state: Pick<State, "curve">, inp: ActInp
     }
   }
 
-  // mode: auto if the device has it; else the side the room is outside of; else keep the side it was
-  // running (hysteresis); else the side opposing the outdoor air
+  // mode: auto if the device has it. Else: a side the room is outside of that the air has (released, not
+  // protecting) means idle — `off` if the device has it, else that side at its setback — never the other
+  // side's edge; else the side the room is outside of; else keep the side it was running (hysteresis);
+  // else the side opposing the outdoor air
   let mode: Mode;
   if (cap.modes.includes("auto")) mode = "auto";
   else {
-    const outside = inp.tin === null ? null : SIDES.find((side) => !released[side.key] && inwardOf(side, sp[side.key], inp.tin as number) < 0) ?? null;
+    const tin = inp.tin;
+    const outsideEdge = tin === null ? null : SIDES.find((side) => inwardOf(side, edge[side.key], tin) < 0) ?? null;
+    const outside = tin === null ? null : SIDES.find((side) => !released[side.key] && inwardOf(side, sp[side.key], tin) < 0) ?? null;
     const prev = SIDES.find((side) => side.key === inp.lastMode && !released[side.key]);
-    const want: Mode = outside ? outside.key : prev ? prev.key : pushedSide().key;
+    let want: Mode;
+    if (outsideEdge && released[outsideEdge.key] && protecting !== outsideEdge.limit) want = cap.modes.includes("off") ? "off" : outsideEdge.key;
+    else want = outside ? outside.key : prev ? prev.key : pushedSide().key;
     mode = cap.modes.includes(want) ? want : cap.modes[0];
   }
 

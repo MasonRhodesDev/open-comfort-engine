@@ -74,6 +74,19 @@ describe("household simulation (42 summer days, a slow house)", () => {
   });
 });
 
+describe("office with an internal heat load (machines, sun): the air alone cannot cool it", () => {
+  // the room warms 1.5 °C/h on its own; outdoors is often cooler than the room, so the old vector-only release
+  // would have parked the unit while the room sat above the band
+  const eng = simulate(officeHousehold(14, { seed: 11, thermal: { envelope: 0.6, equipment: (out) => 8 - Math.max(0, out - 25) * 0.15, load: 1.5 } }));
+  it("is never left released outside its band for longer than one dwell plus a reading (§7.4)", () => {
+    const worst = Math.max(...eng.stats.map((d) => d.strandedRunMin));
+    expect(worst).toBeLessThanOrEqual(30 + 10);
+  });
+  it("still releases cooling when the air can do the job (reported: minutes released while attended)", () => {
+    expect(eng.stats.slice(7).some((d) => d.hvacMin < d.attendedMin)).toBe(true);
+  });
+});
+
 describe("office simulation (42 summer days, a fast small room, one aggressive voter)", () => {
   const eng = simulate(officeHousehold(42, { seed: 11 }));
   const sta = simulate(officeHousehold(42, { seed: 11, freezeAfterDay: 0, config: { ...office, params: STATIC } }));
