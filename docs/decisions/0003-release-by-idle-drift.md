@@ -1,7 +1,9 @@
 # ADR 0003 — Release judged by the room's own idle drift (proposed 2026-10-07)
 
-Status: **proposed** — against 0.5.0-rc.4, targeting **0.5.0-rc.5**. Decided 2026-10-07: the rate
-form of release (§3) and the rc.5 target. §8 lists what is still open. Nothing is built.
+Status: **implemented on the PR branch, targeting 0.5.0-rc.7** (2026-10-14). Written against rc.4 on
+2026-10-07 (decisions: the rate form of release, §3); while it was being reviewed, rc.5 and rc.6
+shipped on `main` from the live office incidents of 2026-10-10/11 — §0 says what they settled and
+what this ADR adds on top. §8 lists the decisions and what superseded which.
 
 ## Context
 
@@ -60,6 +62,35 @@ real `off` to be off while idle has to re-derive the act, which the spec's own �
 ("uses exactly this, so it cannot disagree") says it must not. (b) The mode rule for devices
 without `auto` can never produce `off` (the fall-through always lands on a side), so a host
 branch on `mode === "off"` is dead code.
+
+## 0. Reconciliation with rc.5 and rc.6 (2026-10-14)
+
+Between this ADR's first draft and its implementation, two releases landed on `main` from the
+other thread's live findings (open-comfort-engine issue #2; home-flows #53, #55, #56):
+
+- **rc.5** — release asks the thermal model it already has: a side is released only while the air
+  is expected to close the room's gap to the edge within one `releaseDwellMin` (`stranded`, with a
+  one-`setpointStep` dead zone); a released side on a heat/cool/off device is `off`. The host's
+  `equip` now comes from power draw (home-flows #53), which was this ADR's §5 prerequisite. rc.5's
+  own spec text named the remaining limit: *"the thermal model has no internal-load term … A load
+  term is the model's next input, not a rule."*
+- **rc.6** — inside the band an off-capable device is `off`; a side is switched on when the room
+  crosses an edge (owner decision after the office reset).
+
+What this ADR adds on top of them, as rc.7:
+
+- §2 as written: the load term and its estimator (rc.5's "next input").
+- §3 reconciled: release's two tests (`drift`, `reach`) read the modelled drift in °C/h against
+  `natureRate`, **and rc.5's `stranded` test stays** — it now sees the load through
+  `expectedChange`. The pure rate form alone would have re-opened issue #2 (a slow room far outside
+  its band, drifting inward but too slowly, would be released): `stranded` is the time dimension the
+  rate form lacks. Inside the band, where `stranded` cannot act, the drift tests are what stop the
+  office's warm-up cycle — rc.5 and rc.6 still release there on the raw air vector.
+- §4: `equipment` is published, and `heading` (the drift's sign) replaces the air vector in the gap
+  tie-break and the mode fall-through. The act/mode rewrite from the adversarial review (§8 item 4)
+  is **superseded by rc.6's mode rule**, which already makes protection reachable on a device without
+  `auto` through `protecting`; §8 item 1 (the host maps idle → off) is moot — the engine says `off`.
+- §9 snapshot v4 as written (rc.5 and rc.6 stayed on v3).
 
 ## 1. The change to the loop
 
@@ -140,8 +171,9 @@ outdoor vector. **Decided (2026-10-07): release judges the room's own predicted 
 °C/h** — where the room is, and where the edge is:
 
 ```
-push  = σ · idle(out, tin)        ≤ −natureRate  → released       (the room is drifting away from this edge on its own)
-reach = −σ · idle(out, edge)      < 0            → taken back      (a room sitting at the edge would drift back outside it)
+drift    = σ · idle(out, tin)        ≤ −natureRate  → released       (the room is drifting away from this edge on its own)
+reach    = −σ · idle(out, edge)      < 0            → taken back      (a room sitting at the edge would drift back outside it)
+stranded = outsideBy ≥ setpointStep and progress < outsideBy  → taken back   (rc.5's test, kept: the drift must close the gap within one dwell)
 ```
 
 with `idle(out, T) = envelope(out)·(out − T) + gain(out)` from §2. The same two questions as
@@ -195,7 +227,8 @@ and needs nothing. A host that maps idle to off takes over the device's own cycl
 2 °C/h of gain would see ~80 compressor starts a day) and SHOULD apply its own minimum on and
 off times. Vectors pin `equipment`.
 
-**The act and mode rules themselves changed in review** (blocking finding B1, plus S1). As
+**The act and mode rules themselves changed in review** (blocking finding B1, plus S1) — *B1's
+rewrite is superseded by rc.6, see §0; S1's `heading` stands. Kept here as the record.* As
 first drafted — and as rc.4's mode rule already was — a side that is released was "not in the
 device's hands", so on a device without `auto` the engine could never name it: the office
 with cooling released at setback 29 and the room at 29.6 (past `protect.max` 29.4) would
@@ -217,9 +250,9 @@ mode*. A duty field (`equipMin`) for short-cycling units is deferred (§8, item 
 
 ## 5. Before this ships (prerequisite, home-flows)
 
-- `comfort.py` office feeder: `equip` from power and mode (running ⇔ watts above the standby
-  floor, side from the mode), not from ESPHome `action`, which is 0 while cooling. Until then
-  every cooling interval teaches the wrong term under either estimator.
+- **Done (home-flows #53, 2026-10-11):** `comfort.py` office feeder: `equip` from power and mode
+  (running ⇔ watts above the standby floor, side from the mode), not from ESPHome `action`, which
+  is 0 while cooling. Until then every cooling interval taught the wrong term under either estimator.
 - Check the office's `out` source. The engine is fed the unit's own outdoor sensor
   (`o.outdoor ?? w.now`), which climbed 24.5 → 27.5 °C during the 30-minute cooling run while
   the house's sensor had read 21 °C at 14:07. If the condenser warms that sensor, release is
@@ -259,9 +292,9 @@ mode*. A duty field (`equipMin`) for short-cycling units is deferred (§8, item 
 
 ## 7. What changes where (only after approval)
 
-- **Spec** 0.5.0-rc.5: §3.4 (`natureRate` replaces `natureMargin`; `thermalPriorHours`), §4 (`equip` sentence),
-  §6.5 (source term, estimator), §7.4 (release reads the model), §7.8 (`equipment`; §10 says
-  it is not a decision trigger),
+- **Spec** 0.5.0-rc.7: §3.4 (`natureRate` replaces `natureMargin`; `thermalPriorHours`), §4 (`equip` sentence),
+  §6.5 (source term, estimator), §7.4 (drift and reach read the model; rc.5's stranded stays),
+  §7.8 (`equipment`, `heading`; §10 says `equipment` is not a decision trigger),
   §9 snapshot v4 (per-knot statistics; a v3 snapshot keeps its equipment rates — same meaning —
   and starts the idle statistics at zero, which needs the config; CONFORMANCE's runner passes it).
   Vectors: **all twelve re-pin** (every one pins `thermal` and has a reading; with the `|x| ≥ 1`
@@ -287,12 +320,14 @@ teach); a time-of-day or solar term now (no clock in the engine; a later measure
 ## 8. Decisions
 
 Taken 2026-10-07: **release in rate form** (§3; the equilibrium form rejected as
-ill-conditioned) and **target 0.5.0-rc.5** (rc.4 is live; 0.5.0 final is not cut).
+ill-conditioned) and a target of rc.5 — **now rc.7**, rc.5 and rc.6 having shipped meanwhile, with
+rc.5's `stranded` test kept alongside the rate form (§0).
 
 Also taken 2026-10-07 (may still move in PR review):
 
 1. **Office maps `idle → off`** once `equipment` is published; spec wording MAY (the house in
-   `auto` must not be told to switch off).
+   `auto` must not be told to switch off). *Moot since rc.6: the engine outputs `off` itself;
+   `equipment` is published for graphs, the projection and hosts of `auto` devices.*
 2. **No `equipMin`** for now: the single `equip` with the host fix; revisit if the office's
    equipment rates still do not learn after a week of correct attribution.
 3. Defaults: `thermalPriorHours` 2 h, `natureRate` 0.3 °C/h (range 0.1–2), gain clamp
@@ -300,8 +335,9 @@ Also taken 2026-10-07 (may still move in PR review):
 
 Applied from the adversarial review of the spec diff (2026-10-07; open to veto in PR review):
 
-4. The act and mode rules of §4 (`side` / `heading`; a released side holds its setback; the
-   drift's sign replaces the air vector in the gap tie-break and mode fall-through).
+4. The act and mode rules of §4 — the "released side holds its setback" rewrite is **superseded
+   by rc.6** (§0); `heading` (the drift's sign in the gap tie-break and mode fall-through) and the
+   published `equipment` stand.
 5. Three learning gates (§2): inadmissible rate → nothing; no `equip` → nothing; `FROZEN` →
    nothing. Equipment-rate floor 0.1 (the reference's, now the spec's).
 6. v3 snapshots keep their equipment rates; `restore` takes the config.

@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { init, restore, serialize, step, type State } from "../src";
 
 const dir = new URL("../../../spec/vectors/", import.meta.url).pathname;
-const EXACT = new Set(["heat", "cool", "mode", "state", "block", "reasons", "feedback", "type", "action", "dir", "user", "updated"]);
+const EXACT = new Set(["heat", "cool", "mode", "equipment", "state", "block", "reasons", "feedback", "type", "action", "dir", "user", "updated"]);
 
 function compare(actual: unknown, expected: unknown, path: string, key = ""): void {
   if (expected === null || typeof expected !== "object") {
@@ -25,7 +25,7 @@ for (const f of readdirSync(dir).filter((x) => x.endsWith(".jsonl")).sort()) {
   describe(`vector ${f}`, () => {
     it("conforms", () => {
       const [head, ...lines] = readFileSync(dir + f, "utf8").trim().split("\n").map((l) => JSON.parse(l));
-      let s: State = head.snapshot ? restore(head.snapshot) : init(head.config);
+      let s: State = head.snapshot ? restore(head.snapshot, head.config) : init(head.config);
       lines.forEach((line, i) => {
         if (line.roundtrip) { s = restore(JSON.parse(JSON.stringify(serialize(s)))); return; }
         const r = step(s, line.event, head.config);

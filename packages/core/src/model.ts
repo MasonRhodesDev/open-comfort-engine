@@ -3,6 +3,7 @@
 import type { CurvePoint, Knot, Params, PerSide, ThermalCurve } from "./types";
 import { COOL, HEAT, type Side } from "./side";
 import { clamp, forget, gaussianPrior, meanSigma, phi, phiInv, quantile, update } from "./math";
+import { fitKnot } from "./thermal"; // (thermal.ts imports the knots from here; both are used only at call time)
 
 export interface Grid {
   p: Params;
@@ -105,6 +106,6 @@ export function curvePoints(gr: Grid, curve: PerSide<Knot[]>, th: ThermalCurve):
     cool: knotQuantile(gr, curve.cool[i], COOL, gr.p.qSafe),
     heatSigma: meanSigma(gr.g, curve.heat[i].w).sigma,
     coolSigma: meanSigma(gr.g, curve.cool[i].w).sigma,
-    thermal: { envelope: th.envelope[i], heat: th.heat[i], cool: th.cool[i] },
+    thermal: { ...fitKnot(th.idle[i], gr.p), heat: th.heat[i], cool: th.cool[i] },
   }));
 }

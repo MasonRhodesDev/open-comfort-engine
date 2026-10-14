@@ -22,7 +22,7 @@ import { MIN, parseWhen, When } from "./time";
 import { Ctx, params } from "./ctx";
 import { COOL, HEAT, SIDES, Side, inner, inwardOf, perSide, sideForVote, sideOf } from "./side";
 import { confidenceAt, curvePoints, edgeAt, newCurve, observeSilence, observeVote, sigmaAt, votesAt, type Grid } from "./model";
-import { expectedChange, newThermal, observeInterval, thermalAt } from "./thermal";
+import { expectedChange, idleRate, newThermal, observeInterval, thermalAt } from "./thermal";
 
 export { params };
 
@@ -42,7 +42,7 @@ function gridOf(config: ZoneConfig): Grid {
 export function init(config: ZoneConfig): State {
   const gr = gridOf(config);
   return {
-    snapshotVersion: 3,
+    snapshotVersion: 4,
     zone: config.id,
     seedKey: seedKey(config),
     curve: newCurve(gr, config.seed),
@@ -63,16 +63,27 @@ export function init(config: ZoneConfig): State {
   };
 }
 
-/** §9: accept any snapshot version ≤ ours; older designs keep only what still means something. A v3
- * snapshot built with other grid/knot parameters restarts the curve and thermal model the same way. */
+/** §9: accept any snapshot version ≤ ours; older designs keep only what still means something. A v3 snapshot
+ * keeps its curve and its equipment rates (they mean the same thing) and starts the idle statistics at zero,
+ * which needs the config for the knot count. A v3 or v4 snapshot built with other grid/knot parameters
+ * restarts the curve and thermal model the same way as an older design. */
 export function restore(snapshot: Snapshot, config?: ZoneConfig): State {
   if (!snapshot || typeof snapshot !== "object") throw new Error("bad snapshot");
   const v = (snapshot as { snapshotVersion?: number }).snapshotVersion;
-  if (v !== 1 && v !== 2 && v !== 3) throw new Error("unsupported snapshotVersion " + v);
-  if (v === 3 && (!config || (snapshot as Snapshot).seedKey === seedKey(config))) {
+  if (v !== 1 && v !== 2 && v !== 3 && v !== 4) throw new Error("unsupported snapshotVersion " + v);
+  if ((v === 3 || v === 4) && (!config || (snapshot as Snapshot).seedKey === seedKey(config))) {
     const s = JSON.parse(JSON.stringify(snapshot)) as State;
     if (!s.releasedAt) s.releasedAt = { heat: null, cool: null };
     if (!s.quiet || !("lastAt" in s.quiet)) s.quiet = { lastAt: null };
+    if (v === 3) {
+      if (!config) throw new Error("restoring a version 3 snapshot needs the zone config");
+      const old = (snapshot as unknown as { thermal?: { heat?: number[]; cool?: number[] } }).thermal;
+      const fresh = newThermal(params(config));
+      const n = fresh.idle.length;
+      const keep = (xs: number[] | undefined, prior: number[]) => (xs && xs.length === n ? [...xs] : prior);
+      s.thermal = { idle: fresh.idle, heat: keep(old?.heat, fresh.heat), cool: keep(old?.cool, fresh.cool) };
+      s.snapshotVersion = 4;
+    }
     // a curve that has never learned a vote is as good as fresh: history (a vote replay) is accepted (§9)
     const taught = SIDES.some((side) => s.curve[side.key].some((k) => k.n > 0));
     if (!taught) s.lastEventAt = null;
@@ -145,12 +156,12 @@ function act(gr: Grid, cfg: ZoneConfig, state: Pick<State, "curve" | "thermal">,
   });
   const edge = perSide((side) => (push[side.key] === null ? band[side.key] : (push[side.key] as number)));
 
-  // §7.4 nature: a side is released to setback while the outdoor air pushes the room away from it AND can
-  // bring the room inside that edge on its own — by the zone's learned thermal response, within one dwell.
-  // It is taken back when the air pushes the other way (beyond natureMargin, so jitter cannot flap it), can
-  // no longer reach the edge, or is too slow for how far outside the room is (nobody is left stranded);
-  // never while a complaint is fresh (§7.3). A side keeps its state for releaseDwellMin after a change (a
-  // sun-struck outdoor sensor cannot cycle the equipment).
+  // §7.4 nature: a side is released to setback while the room's own drift (§6.5: the outdoor air through the
+  // envelope, plus what the room makes or loses by itself) carries it away from that edge AND would carry it
+  // inside — within one dwell, when the room is outside. It is taken back when the drift turns (beyond
+  // natureRate, so jitter cannot flap it), can no longer reach the edge, or is too slow for how far outside the
+  // room is (nobody is left stranded); never while a complaint is fresh (§7.3). A side keeps its state for
+  // releaseDwellMin after a change (a sun-struck outdoor sensor cannot cycle the equipment).
   const released = { ...inp.released };
   const releasedAt = { ...inp.releasedAt };
   for (const side of SIDES) {
@@ -159,14 +170,14 @@ function act(gr: Grid, cfg: ZoneConfig, state: Pick<State, "curve" | "thermal">,
     if (!known || inp.fresh[side.key]) want = false;
     else {
       const out = inp.out as number, tin = inp.tin as number;
-      const pushAir = side.sign * (out - tin); // < 0: the air pushes the room away from this edge
-      const reach = inwardOf(side, edge[side.key], out); // < 0: the outdoor temperature is outside this edge
-      // what the air alone is expected to do over one dwell (inward of this edge), against how far outside the room is
+      const drift = side.sign * idleRate(state.thermal, p, out, tin); // < 0: the room drifts away from this edge, °C/h
+      const reach = -side.sign * idleRate(state.thermal, p, out, edge[side.key]); // < 0: a room at the edge would drift back outside it
+      // what the drift alone is expected to do over one dwell (inward of this edge), against how far outside the room is
       const progress = inwardOf(side, 0, expectedChange(state.thermal, p, out, p.releaseDwellMin / 60, out - tin, null));
       const outsideBy = Math.max(0, -inwardOf(side, edge[side.key], tin));
       const stranded = outsideBy >= cap.setpointStep && progress < outsideBy; // a step's dead zone: noise at the edge is not "outside"
-      if (pushAir >= p.natureMargin || reach < 0 || stranded) want = false;
-      else if (pushAir <= -p.natureMargin) want = true;
+      if (drift >= p.natureRate || reach < 0 || stranded) want = false;
+      else if (drift <= -p.natureRate) want = true;
     }
     if (want !== released[side.key]) {
       const since = releasedAt[side.key];
@@ -187,16 +198,17 @@ function act(gr: Grid, cfg: ZoneConfig, state: Pick<State, "curve" | "thermal">,
 
   // device minimum gap: `keep` stays, the other side moves outward (rounded outward) to restore it
   let gapped = false;
-  const pushedSide = (): Side => (inp.out !== null && inp.tin !== null && inp.out > inp.tin ? COOL : HEAT);
+  // §7.8 `heading`: the side the room is drifting toward on its own (cool while its drift warms it); heat if unknown
+  const heading = (): Side => (inp.out !== null && inp.tin !== null && idleRate(state.thermal, p, inp.out, inp.tin) > 0 ? COOL : HEAT);
   const fixGap = (keep: Side) => {
     if (sp.cool - sp.heat >= cap.minGap - 1e-9) return;
     gapped = true;
     const give = sideOf(keep.key === "cool" ? "heat" : "cool");
     sp[give.key] = clamp(roundInward(sp[keep.key] + give.sign * cap.minGap, cap.setpointStep, keep.sign), cap[give.key].min, cap[give.key].max);
   };
-  // a side someone just asked for (a fresh complaint) is kept; otherwise the side the room is pushed toward
+  // a side someone just asked for (a fresh complaint) is kept; otherwise the side the room is heading for
   const asked = SIDES.filter((side) => inp.fresh[side.key]);
-  fixGap(asked.length === 1 ? asked[0] : pushedSide());
+  fixGap(asked.length === 1 ? asked[0] : heading());
 
   // §7.6 protection: clamp (the other side gives way again), and track whether the room is beyond a limit
   const prot = cfg.protect || {};
@@ -222,7 +234,7 @@ function act(gr: Grid, cfg: ZoneConfig, state: Pick<State, "curve" | "thermal">,
   // hands (not released, or protection is clamping it); else nothing needs to run: `off` if the device has
   // it (idle is the default — inside the band the device is off and the engine switches a side on when the
   // room crosses an edge); a device without `off` idles on a released side at its setback, else keeps the
-  // side it was running (hysteresis), else takes the side opposing the outdoor air
+  // side it was running (hysteresis), else takes the side the room is heading for
   let mode: Mode;
   if (cap.modes.includes("auto")) mode = "auto";
   else {
@@ -234,7 +246,7 @@ function act(gr: Grid, cfg: ZoneConfig, state: Pick<State, "curve" | "thermal">,
     if (needs) want = needs.key;
     else if (cap.modes.includes("off")) want = "off";
     else if (outsideEdge && released[outsideEdge.key]) want = outsideEdge.key;
-    else want = prev ? prev.key : pushedSide().key;
+    else want = prev ? prev.key : heading().key;
     mode = cap.modes.includes(want) ? want : cap.modes[0];
   }
 
@@ -297,6 +309,7 @@ function computeOutput(ctx: Ctx): Output {
     cool: a.cool,
     mode: a.mode,
     state: st,
+    equipment: a.equipment ? a.equipment.key : "idle",
     band: a.band,
     released: { ...a.released },
     push: { ...a.push },
@@ -412,12 +425,12 @@ function onReading(ctx: Ctx, ev: Extract<EngineEvent, { type: "reading" }>) {
   const s = ctx.s;
   const t = ctx.w.t;
   const prev = s.reading;
-  // §2b the interval since the previous reading teaches the thermal model; `equip` reports what the
-  // equipment has been doing since that reading
+  // §6.5 the interval since the previous reading teaches the thermal model (not while FROZEN, §7.7); `equip`
+  // reports what the equipment has been doing since that reading, and an interval without it teaches nothing
   const out = ctx.out;
-  if (prev && out !== null) {
+  if (prev && out !== null && !s.frozen && ev.equip !== undefined) {
     const dtMin = (t - prev.at) / MIN;
-    if (dtMin >= 1 && dtMin <= 30) { observeInterval(s.thermal, ctx.p, out, dtMin / 60, ev.tin - prev.tin, out - prev.tin, ev.equip ?? null); ctx.dirty = true; }
+    if (dtMin >= 1 && dtMin <= 30) { observeInterval(s.thermal, ctx.p, out, dtMin / 60, ev.tin - prev.tin, out - prev.tin, ev.equip); ctx.dirty = true; }
   }
   s.reading = { tin: ev.tin, rh: ev.rh ?? null, equip: ev.equip ?? null, applied: ev.applied ?? null, at: t };
 }
@@ -538,6 +551,7 @@ function emptyOutput(state: State, config: ZoneConfig): Output {
     cool: config.seed.cool,
     mode: config.capabilities.modes.includes("auto") ? "auto" : config.capabilities.modes[0],
     state: "SEEDED",
+    equipment: "idle",
     band: { ...config.seed },
     released: { heat: false, cool: false },
     push: { heat: null, cool: null },

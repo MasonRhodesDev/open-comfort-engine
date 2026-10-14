@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { init, step, serialize, restore, project, phi, parseWhen, knots, params, type State, type EngineEvent, type Output } from "../src";
 import { house, office } from "./fixtures";
+import { thermalAt } from "../src/thermal";
 import { scenarios } from "./scenarios";
 import { runScenario } from "./run";
 
@@ -194,14 +195,16 @@ describe("nature (§7.4)", () => {
     // the same room, a step past the edge: the air closes that within the dwell
     const near = lastOf(drive(base(24.6, 18)).outs);
     expect(near.released.cool).toBe(true);
-    // teach a fast envelope at this outdoor temperature (idle intervals, the room falling 1 °C per 10 min toward
-    // the air), then the room is back at 26 after the heater ran (the jump is the equipment's, not the air's):
-    // the same 26/18 case is now released, the air is expected to close 1.6 °C within a dwell
+    // teach a fast envelope at this outdoor temperature (idle intervals, the room falling toward the air at
+    // 0.8/h of its gap), then the room is back at 26 after the heater ran (the jump is the equipment's, not the
+    // air's): the same 26/18 case is now released, the air is expected to close 1.6 °C within a dwell
     const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
-    const taught = drive([...base(26, 18), ...[25, 24, 23, 22, 21, 20].map((tin, i) => ({ type: "reading" as const, now: at(1, hhmm(9 * 60 + 16 + 10 * i)), tin, equip: "idle" as const }))]);
+    const falling: number[] = [];
+    for (let tin = 26, i = 0; i < 6; i++) { tin += (0.8 * (18 - tin)) / 6; falling.push(Math.round(tin * 100) / 100); }
+    const taught = drive([...base(26, 18), ...falling.map((tin, i) => ({ type: "reading" as const, now: at(1, hhmm(9 * 60 + 16 + 10 * i)), tin, equip: "idle" as const }))]);
     const fast = step(taught.last.state, { type: "reading", now: at(1, hhmm(9 * 60 + 76)), tin: 26, equip: "heat" }, house);
-    const k20 = knots(params(house)).indexOf(20);
-    expect(fast.state.thermal.envelope[k20]).toBeGreaterThan(0.4);
+    expect(thermalAt(fast.state.thermal, params(house), 20).envelope).toBeGreaterThan(0.4);
+    expect(Math.abs(thermalAt(fast.state.thermal, params(house), 20).gain)).toBeLessThan(0.5); // the data lie on a line through the origin
     expect(fast.output.released.cool).toBe(true);
   });
   it("inside the band, or outside a released side, a heat/cool/off device is off; a heat/cool-only device holds a side", () => {
@@ -280,8 +283,24 @@ describe("thermal response (§2b)", () => {
     for (; m < 240; m += 10) { evs.push({ type: "reading", now: at(1, `${9 + Math.floor(m / 60)}:${String(m % 60).padStart(2, "0")}`), tin: Math.round(tin * 100) / 100, equip: "cool" }); tin += (0.5 * (30 - tin) - 3) * (10 / 60); }
     const { s, outs } = drive(evs);
     expect(lastOf(outs).thermal.envelope).toBeGreaterThan(0.38); // at 30 °C out: moving from the 0.3 prior toward 0.5
-    expect(lastOf(outs).thermal.cool).toBeGreaterThan(2.1); // moving from the 2.0 prior toward 3 at thermalForget per interval (split over two knots)
+    expect(Math.abs(lastOf(outs).thermal.gain)).toBeLessThan(0.6); // the room has no load of its own here
+    // the equipment rate moves from the 2.0 prior toward 3 at thermalForget per hour of running (two hours here,
+    // split over two knots): a little, and further the longer it runs
+    expect(lastOf(outs).thermal.cool).toBeGreaterThan(2.02);
+    const longer = drive([...evs, { type: "weather" as const, now: at(1, "12:55"), out: 30 }, ...Array.from({ length: 12 }, (_, i) => ({ type: "reading" as const, now: at(1, `${13 + Math.floor(i / 6)}:${String((i % 6) * 10).padStart(2, "0")}`), tin: 22.6, equip: "cool" as const }))]);
+    expect(lastOf(longer.outs).thermal.cool).toBeGreaterThan(lastOf(outs).thermal.cool);
     expect(s.thermal.cool[0]).toBe(2.0); // the −10 °C knot saw nothing
+    expect(s.thermal.idle[0].n).toBe(0);
+  });
+  it("teaches nothing from an interval without equip, an inadmissible rate, or while frozen", () => {
+    const start: EngineEvent[] = [{ type: "weather", now: at(1, "09:00"), out: 30 }, { type: "reading", now: at(1, "09:00"), tin: 20.0, equip: "idle" }];
+    const fresh = init(house).thermal;
+    const none = drive([...start, { type: "reading", now: at(1, "09:10"), tin: 21.0 }]).s.thermal;
+    expect(none).toEqual(fresh);
+    const glitch = drive([...start, { type: "reading", now: at(1, "09:10"), tin: 102.5, equip: "idle" }]).s.thermal;
+    expect(glitch).toEqual(fresh);
+    const frozen = drive([...start, { type: "freeze", now: at(1, "09:05"), on: true }, { type: "reading", now: at(1, "09:10"), tin: 21.0, equip: "idle" }]).s.thermal;
+    expect(frozen).toEqual(fresh);
   });
 });
 
@@ -367,11 +386,21 @@ describe("state machine (§5, §9)", () => {
   it("an older snapshot restores to a fresh curve with the room and weather carried over", () => {
     const old: any = { snapshotVersion: 2, zone: "house", reading: { tin: 23, rh: null, equip: "idle", applied: null, at: 1 }, weather: { out: 30, high: null, low: null, at: 1 }, frozen: false, protecting: null, risk: { heat: 0.5, cool: 0.5 } };
     const r = restore(old, house);
-    expect(r.snapshotVersion).toBe(3);
+    expect(r.snapshotVersion).toBe(4);
     expect(r.reading!.tin).toBe(23);
     expect(r.curve).toEqual(init(house).curve);
     expect(r.lastEventAt).toBeNull(); // history (a vote replay) is accepted again
     expect(() => step(r, { type: "tick", now: at(1, "10:00") }, house)).not.toThrow();
+    // a v3 snapshot keeps its curve and its equipment rates (the same thing, °C/h net of the idle drift); the idle
+    // statistics start at zero; it needs the config
+    const v4s = drive([...base(24.2), { type: "vote", now: at(1, "09:20"), user: "u1", dir: "hot" }]).s;
+    const v3: any = { ...v4s, snapshotVersion: 3, thermal: { envelope: v4s.thermal.idle.map(() => 0.9), heat: v4s.thermal.heat, cool: v4s.thermal.cool.map(() => 3.1) } };
+    const m = restore(v3, house);
+    expect(m.snapshotVersion).toBe(4);
+    expect(m.curve).toEqual(v4s.curve);
+    expect(m.thermal.cool.every((x) => x === 3.1)).toBe(true);
+    expect(m.thermal.idle.every((k) => k.n === 0)).toBe(true);
+    expect(() => restore(v3)).toThrow();
     // a v3 snapshot built with other knot parameters restarts the same way, through a restore event
     const other = { ...house, params: { knotStep: 10 } };
     const s3 = drive([...base(24.2), { type: "vote", now: at(1, "09:20"), user: "u1", dir: "hot" }]).s;

@@ -1,13 +1,16 @@
 // Per-step working context: the (copied) state, config, parsed time, and the
 // effects being collected. Shared by the engine modules.
 import type { EngineRecord, FeedbackCode, Params, State, ZoneConfig } from "./types";
-import { DEFAULT_PARAMS } from "./types";
+import { DEFAULT_PARAMS, PARAM_RANGES } from "./types";
 import { grid } from "./math";
 import type { Grid } from "./model";
 import type { When } from "./time";
 
+/** §3.4: defaults, the host's overrides, each clamped to its allowed range */
 export function params(config: ZoneConfig): Params {
-  return { ...DEFAULT_PARAMS, ...(config.params || {}) };
+  const p: Params = { ...DEFAULT_PARAMS, ...(config.params || {}) };
+  for (const [k, range] of Object.entries(PARAM_RANGES) as [keyof Params, [number, number]][]) p[k] = Math.min(range[1], Math.max(range[0], p[k]));
+  return p;
 }
 
 export class Ctx implements Grid {
