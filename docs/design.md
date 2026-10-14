@@ -232,3 +232,34 @@ else holds the side it was running. The engine switches a side on when the room 
 edge (one reading's lag) instead of leaving the unit's own thermostat armed at the edge.
 Tests: inside → off, crossing the cool edge → cool, back inside → off; a heat/cool-only
 device keeps its side. One vector changed (`protect`: heat → off inside the band).
+
+## 0.5.0-rc.7 — the room's own drift (the load term)
+
+The limit rc.5 named: a room that warms while the outdoor air is cooler. On 2026-10-07 the
+office did exactly that — a closed, well-insulated box with a person, computers and the morning
+sun in it warmed 2.5 °C in half an hour with the air 1.5 °C cooler — and rc.4 released its
+cooling on the vector; under rc.5/rc.6 the same room gives the dwell-bounded cycle. rc.7 adds
+the model input and reads release off the model (`docs/decisions/0003-release-by-idle-drift.md`,
+adversarially reviewed before implementation):
+
+- The idle drift is `envelope · (out − tin) + gain`, per outdoor knot. `gain` (°C/h, the heat
+  the room makes or loses by itself) is the intercept of the line whose slope was already being
+  learned, fitted by least squares on the same readings: each interval weighted by its length,
+  forgetting per hour of evidence, a permanent prior of `thermalPriorHours` on
+  `rate = envelopePrior · x`. Still no configured physics. Three gates, all from constants
+  already in the spec: an interval whose rate no admissible line can produce, an interval
+  without `equip`, and anything while `FROZEN` teach nothing.
+- Release's two tests read the drift, not the air: `drift = σ·idle(out, tin)` and
+  `reach = −σ·idle(out, edge)` in °C/h against `natureRate` (0.3 °C/h, replacing the 1 °C
+  `natureMargin`). rc.5's `stranded` test — the gap must close within one dwell — stays, and now
+  sees the load too. At priors this is exactly the rc.6 rule. The equilibrium form
+  (`out + gain/envelope`, keeping the margin in °C) was rejected as ill-conditioned in a tight
+  room.
+- The act is published as `output.equipment` (heat / cool / idle), and `heading` — the drift's
+  sign — is the one notion of where the room is going, in the gap tie-break and the mode
+  fall-through. rc.6's mode rule stands.
+- Snapshot v4 (per-knot idle statistics); a v3 snapshot keeps its equipment rates.
+- The thermal-response numbers above ("learned within a week", 0.15 /h, 3.0 °C/h) are rc.2's;
+  re-measured under per-hour forgetting below.
+
+Numbers: (filled in from the sim runs before rc.7 is cut).
