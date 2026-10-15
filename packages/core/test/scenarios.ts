@@ -1,6 +1,6 @@
 // Named event scenarios. They drive the unit tests and are frozen into the
 // spec's conformance vectors (spec/vectors/*.jsonl) by make-vectors.ts.
-import type { EngineEvent, ZoneConfig } from "../src";
+import { init, knots, params, type EngineEvent, type ZoneConfig } from "../src";
 import { house, office } from "./fixtures";
 
 export type ScenarioStep = EngineEvent | { roundtrip: true };
@@ -8,6 +8,8 @@ export interface Scenario {
   name: string;
   description: string;
   config: ZoneConfig;
+  /** a starting snapshot (restored with the config) instead of a fresh state */
+  snapshot?: unknown;
   steps: ScenarioStep[];
 }
 
@@ -174,7 +176,7 @@ export const scenarios: Scenario[] = [
   },
   {
     name: "freeze",
-    description: "Frozen: no learning, no exploration; votes still push.",
+    description: "Frozen: no learning, no exploration (the thermal model included); votes still push.",
     config: house,
     steps: [
       ...start(1, 24.2, 24.5),
@@ -185,4 +187,40 @@ export const scenarios: Scenario[] = [
       { type: "tick", now: at(1, "11:25") },
     ],
   },
+  {
+    name: "idle-gain",
+    description: "A room that warms by itself with cooler air outside (people, machines, sun): cooling is released at priors as rc.6 did, taken back once the learned drift says the air cannot close the gap (after the dwell), and — the gain learned — not released again while the room sits a step past the edge; the act is published, and an off-capable device is off while idle.",
+    config: office,
+    steps: [
+      { type: "weather", now: at(1, "09:00"), out: 23.5 },
+      { type: "reading", now: at(1, "09:00"), tin: 24.9, equip: "idle" },
+      { type: "reading", now: at(1, "09:10"), tin: 25.4, equip: "idle" },
+      { type: "reading", now: at(1, "09:20"), tin: 25.9, equip: "idle" },
+      { type: "reading", now: at(1, "09:30"), tin: 26.4, equip: "idle" },
+      { type: "reading", now: at(1, "09:40"), tin: 25.9, equip: "cool" },
+      { roundtrip: true },
+      { type: "reading", now: at(1, "09:50"), tin: 25.4, equip: "cool" },
+      { type: "reading", now: at(1, "10:00"), tin: 24.9, equip: "cool" },
+      { type: "reading", now: at(1, "10:10"), tin: 24.4, equip: "cool" },
+    ],
+  },
+  {
+    name: "migrate-v3",
+    description: "A version-3 snapshot (0.5.0-rc.6) restores into version 4: the curve and the equipment rates are kept, the idle statistics start at zero (envelope at its prior, gain 0), the act is published; the next idle interval teaches the new statistics.",
+    config: office,
+    snapshot: v3Snapshot(office),
+    steps: [
+      { type: "weather", now: at(1, "09:00"), out: 20 },
+      { type: "reading", now: at(1, "09:00"), tin: 23.0, equip: "idle" },
+      { type: "reading", now: at(1, "09:10"), tin: 23.3, equip: "idle" },
+    ],
+  },
 ];
+
+/** A version-3 snapshot as 0.5.0-rc.6 wrote it: a fresh curve, the thermal model as three per-knot arrays with
+ * a learned cooling rate. */
+function v3Snapshot(config: ZoneConfig): unknown {
+  const s = init(config) as unknown as Record<string, unknown>;
+  const n = knots(params(config)).length;
+  return { ...s, snapshotVersion: 3, thermal: { envelope: Array(n).fill(0.3), heat: Array(n).fill(2), cool: Array(n).fill(3.2) } };
+}

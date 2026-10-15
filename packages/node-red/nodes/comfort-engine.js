@@ -40,7 +40,7 @@ module.exports = function (RED) {
       const o = r.output;
       const outMsg = {
         topic: zone.id,
-        payload: { heat: toUnits(o.heat), cool: toUnits(o.cool), mode: o.mode, state: o.state, units, released: o.released, protect: o.protect, thermal: o.thermal },
+        payload: { heat: toUnits(o.heat), cool: toUnits(o.cool), mode: o.mode, equipment: o.equipment, state: o.state, units, released: o.released, protect: o.protect, thermal: o.thermal },
         engine: o,
       };
       const recs = r.effects.records.map((rec) => ({ topic: rec.type, payload: rec }));

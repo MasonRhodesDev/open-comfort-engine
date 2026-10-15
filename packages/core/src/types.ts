@@ -51,12 +51,13 @@ export interface Params {
   stepGrow: number;
   cooldownMin: number;
   repeatWindowMin: number;
-  natureMargin: number;
+  natureRate: number;
   releaseDwellMin: number;
   complaintMin: number;
   envelopePrior: number;
   equipmentPrior: number;
   thermalForget: number;
+  thermalPriorHours: number;
   convergedSigma: number;
   convergedVotes: number;
   protectHysteresis: number;
@@ -85,16 +86,35 @@ export const DEFAULT_PARAMS: Params = {
   stepGrow: 1.25,
   cooldownMin: 30,
   repeatWindowMin: 120,
-  natureMargin: 1.0,
+  natureRate: 0.3,
   releaseDwellMin: 30,
   complaintMin: 120,
   envelopePrior: 0.3,
   equipmentPrior: 2.0,
   thermalForget: 0.1,
+  thermalPriorHours: 2,
   convergedSigma: 0.6,
   convergedVotes: 20,
   protectHysteresis: 1.0,
   snapshotEveryMin: 60,
+};
+
+/** §3.4 the allowed ranges; a supplied value outside its range is clamped to it (ctx.ts). `natureRate` has only a
+ * floor: a large value is a legitimate "never release". */
+export const PARAM_RANGES: Partial<Record<keyof Params, [number, number]>> = {
+  priorSigma: [0.5, 4],
+  voteNoise: [0.2, 2],
+  silenceSigma: [0.5, 5],
+  silenceWeight: [0, 1],
+  silenceEveryMin: [15, 1440],
+  manualWeight: [0, 1],
+  forget: [0, 0.2],
+  qSafe: [0.05, 0.5],
+  natureRate: [0.1, Infinity],
+  releaseDwellMin: [0, 120],
+  thermalForget: [0.01, 0.5],
+  thermalPriorHours: [0.5, 24],
+  protectHysteresis: [0.2, 3],
 };
 
 /** §4 */
@@ -130,14 +150,26 @@ export interface CurvePoint {
 export interface Thermal {
   /** 1/h: idle rate of change per °C of (out − tin) */
   envelope: number;
-  /** °C/h the equipment adds on each side, net of the envelope */
+  /** °C/h the room makes or loses by itself (people, machines, sun, the ground): the idle drift's intercept */
+  gain: number;
+  /** °C/h the equipment adds on each side, net of the idle drift */
   heat: number;
   cool: number;
 }
 
-/** §6.5 the learned thermal response: one value per outdoor-temperature knot (the curve's knots) */
+/** §6.5 one knot's idle-drift statistics: the exponentially-forgotten sums of (x = out − tin, rate) pairs,
+ * weighted by hours of evidence; envelope and gain are the least-squares line through them and the prior */
+export interface IdleStats {
+  n: number;
+  sx: number;
+  sy: number;
+  sxx: number;
+  sxy: number;
+}
+
+/** §6.5 the learned thermal response: one entry per outdoor-temperature knot (the curve's knots) */
 export interface ThermalCurve {
-  envelope: number[];
+  idle: IdleStats[];
   heat: number[];
   cool: number[];
 }
@@ -148,6 +180,8 @@ export interface Output {
   cool: number;
   mode: Mode;
   state: StateName;
+  /** §7.8 the act: what the equipment should be doing now (idle also while there is no reading) */
+  equipment: "heat" | "cool" | "idle";
   /** the learned band at the current outdoor temperature, before release and protection */
   band: PerSide<number>;
   released: PerSide<boolean>;
@@ -207,7 +241,7 @@ export interface Voter {
 
 /** §5.1 / §9 — the complete engine state, JSON-serialisable. */
 export interface Snapshot {
-  snapshotVersion: 3;
+  snapshotVersion: 4;
   zone: string;
   /** the seed and the grid/knot parameters the curve was built with; a change restarts it (§3.2, §9) */
   seedKey: string;

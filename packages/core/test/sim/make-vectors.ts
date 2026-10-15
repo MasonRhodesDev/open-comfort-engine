@@ -9,7 +9,7 @@ const dir = new URL("../../../../spec/vectors/", import.meta.url).pathname;
 mkdirSync(dir, { recursive: true });
 for (const sc of scenarios) {
   const ran = runScenario(sc);
-  const lines: string[] = [JSON.stringify({ vector: sc.name, specVersion: SPEC_VERSION, description: sc.description, config: sc.config, snapshot: null })];
+  const lines: string[] = [JSON.stringify({ vector: sc.name, specVersion: SPEC_VERSION, description: sc.description, config: sc.config, snapshot: sc.snapshot ?? null })];
   let i = 0;
   for (const st of sc.steps) {
     if ("roundtrip" in st) { lines.push(JSON.stringify({ roundtrip: true })); continue; }

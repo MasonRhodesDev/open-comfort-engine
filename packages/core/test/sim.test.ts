@@ -9,7 +9,7 @@ import { thermalAt } from "../src/thermal";
 import { params } from "../src";
 
 // a plain programmed thermostat: the seed range, nothing learned (frozen from day 0), no felt votes, no release
-const STATIC = { stepInit: 1e-4, stepMin: 1e-4, stepMax: 1e-4, natureMargin: 99 };
+const STATIC = { stepInit: 1e-4, stepMin: 1e-4, stepMax: 1e-4, natureRate: 99 };
 const sum = (st: DayStats[], a: number, b: number, k: "votes" | "uncomfortableMin" | "asleepUncomfortableMin" | "hvacMin" | "attendedMin" | "degreeHours") => st.slice(a, b).reduce((x, s) => x + s[k], 0);
 const mean = (xs: (number | null)[]) => { const v = xs.filter((x): x is number => x !== null); return v.reduce((a, b) => a + b, 0) / (v.length || 1); };
 
@@ -85,6 +85,12 @@ describe("office with an internal heat load (machines, sun): the air alone canno
   it("still releases cooling when the air can do the job (reported: minutes released while attended)", () => {
     expect(eng.stats.slice(7).some((d) => d.hvacMin < d.attendedMin)).toBe(true);
   });
+  it("learns the load as gain (§6.5): the room's own 1.5 °C/h, at the outdoor temperatures it was attended at", () => {
+    const p = params(office);
+    const g = thermalAt(eng.state.thermal, p, 25).gain;
+    expect(Math.abs(g - 1.5)).toBeLessThan(0.6);
+    expect(thermalAt(eng.state.thermal, p, 25).envelope).toBeGreaterThan(0.3); // and the envelope is still told apart from it
+  });
 });
 
 describe("office simulation (42 summer days, a fast small room, one aggressive voter)", () => {
@@ -92,9 +98,17 @@ describe("office simulation (42 summer days, a fast small room, one aggressive v
   const sta = simulate(officeHousehold(42, { seed: 11, freezeAfterDay: 0, config: { ...office, params: STATIC } }));
   it("learns the fast thermal response, and its fade in the heat", () => {
     const p = params(office);
-    expect(Math.abs(thermalAt(eng.state.thermal, p, 28).envelope - 0.6) / 0.6).toBeLessThan(0.15);
-    expect(Math.abs(thermalAt(eng.state.thermal, p, 25).cool - 8) / 8).toBeLessThan(0.15);
-    expect(thermalAt(eng.state.thermal, p, 30).cool).toBeLessThan(thermalAt(eng.state.thermal, p, 25).cool - 0.3);
+    // the drift the engine predicts is what release and the projection use; how it splits between envelope and
+    // gain is only as identifiable as the attended x = out − tin range at each knot makes it (§6.5)
+    const t = thermalAt(eng.state.thermal, p, 28);
+    expect(Math.abs(t.envelope * (28 - 24) + t.gain - 0.6 * (28 - 24)) / (0.6 * 4)).toBeLessThan(0.15);
+    expect(t.envelope).toBeGreaterThan(0.3);
+    // the equipment rate is learned per hour of running (§6.5): this small unit runs in short bursts, so after
+    // six weeks it has had ~10 h of evidence at the 25 °C knot (still converging from the 2 °C/h prior) and
+    // about twice that at 30; the fade in the heat shows between knots with comparable evidence
+    expect(Math.abs(thermalAt(eng.state.thermal, p, 30).cool - 7.25) / 7.25).toBeLessThan(0.15);
+    expect(Math.abs(thermalAt(eng.state.thermal, p, 25).cool - 8) / 8).toBeLessThan(0.3);
+    expect(thermalAt(eng.state.thermal, p, 35).cool).toBeLessThan(thermalAt(eng.state.thermal, p, 30).cool - 0.3);
   });
   it("saves energy against the programmed thermostat (week 3 onward)", () => {
     expect(sum(eng.stats, 14, 42, "hvacMin")).toBeLessThan(0.95 * sum(sta.stats, 14, 42, "hvacMin"));
